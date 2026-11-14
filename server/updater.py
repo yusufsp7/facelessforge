@@ -115,7 +115,32 @@ def set_auto(enabled: bool) -> None:
               conflict_col="k")
 
 
-def apply() -> dict:
+def _under_systemd() -> bool:
+    return bool(os.environ.get("INVOCATION_ID"))
+
+
+def _no_active_work() -> bool:
+    """Auto-apply aman hanya bila tak ada job running DAN tak ada generasi
+    non-terminal (restart membunuh render — gen di-resume, tapi tetap
+    kita hindari bila bisa)."""
+    from . import generator
+    if db.rows("SELECT id FROM jobs WHERE status = 'running' LIMIT 1"):
+        return False
+    terminal = ("done", "failed", "cancelled")
+    busy = db.rows("SELECT id FROM generations WHERE status NOT IN "
+                   f"({','.join(repr(t) for t in terminal)}) LIMIT 1")
+    return not busy
+
+
+def _post_pull_checks() -> tuple[bool, str]:
+    """B6: jalankan pytest setelah pull — commit rusak dibatalkan."""
+    py = sys.executable
+    try:
+        p = subprocess.run([py, "-m", "pytest", "-q"], cwd=str(PROJECT),
+                           capture_output=True, text=True, timeout=900)
+        return p.returncode == 0, (p.stdout or "")[-300:]
+    except Exception as e:
+        return False, repr(e)[:300]
     """Pull, install deps, restart this process. Runs in a thread so the HTTP
     response can be sent first; the UI then polls /api/update until the new
     process reports a new local_head."""
@@ -131,7 +156,9 @@ def apply() -> dict:
 
 
 def _do_apply() -> None:
+    global _updating
     try:
+        prev_head = _git(["rev-parse", "HEAD"])[1].strip()
         branch = _branch()
         rc, out = _git(["pull", "--ff-only", "origin", branch], timeout=180)
         if rc != 0:
@@ -147,9 +174,28 @@ def _do_apply() -> None:
         if pip.returncode != 0:
             db.log_event(None, "update_deps_failed",
                          {"error": (pip.stderr or "")[-300:]})
-        db.log_event(None, "updated", {"branch": branch})
+        # B6 gate: pytest wajib lolos sebelum restart; gagal → rollback pull
+        ok, detail = _post_pull_checks()
+        if not ok:
+            _git(["reset", "--hard", prev_head], timeout=60)
+            db.log_event(None, "update_aborted_tests",
+                         {"detail": detail, "rolled_back_to": prev_head[:7]})
+            with _lock:
+                _last_result = {"error": "pytest gagal — update dibatalkan",
+                                "updates": False}
+                _updating = False
+            return
+        db.log_event(None, "updated", {"branch": branch,
+                                       "from": prev_head[:7]})
         with _lock:
             _last_result = {"updates": False, "applied": True}
+        # B6 watchdog: proses baru wajib lulus /api/health; gagal → rollback
+        marker = paths.data_root() / ".update-watchdog.json"
+        marker.write_text(json.dumps({
+            "prev_head": prev_head, "until": time.time() + 180}), encoding="utf-8")
+        if _under_systemd():
+            # supervisor (Restart=always) yang menyalakan ulang — JANGAN spawn
+            os._exit(0)
         _exec_restart()
     finally:
         pass
@@ -179,6 +225,33 @@ def _no_running_jobs() -> bool:
     return not running
 
 
+def watchdog_check() -> None:
+    """B6: dipanggil saat startup proses BARU — kalau ada penanda update
+    yang belum dikonfirmasi, verifikasi /api/health diri sendiri; tak lulus →
+    rollback ke HEAD sebelumnya (proses berikutnya memuat kode lama)."""
+    try:
+        marker = paths.data_root() / ".update-watchdog.json"
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        marker.unlink()
+        if time.time() > data.get("until", 0):
+            return
+        import urllib.request
+        try:
+            port = os.environ.get("FORGE_PORT", "8790")
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/health", timeout=10) as r:
+                if r.status == 200:
+                    db.log_event(None, "update_health_ok", {})
+                    return
+        except Exception:
+            pass
+        _git(["reset", "--hard", data["prev_head"]], timeout=60)
+        db.log_event(None, "update_rolled_back",
+                     {"to": data["prev_head"][:7]})
+    except Exception:
+        pass
+
+
 def start_auto_loop() -> None:
     """Background loop: auto-apply updates when the checkbox is on."""
     global _loop_started
@@ -190,7 +263,7 @@ def start_auto_loop() -> None:
         while True:
             time.sleep(INTERVAL_MIN * 60)
             try:
-                if not auto_enabled() or _no_running_jobs() is False:
+                if not auto_enabled() or not _no_active_work():
                     continue
                 st = check(force=True)
                 if st.get("updates"):

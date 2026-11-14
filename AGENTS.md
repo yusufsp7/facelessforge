@@ -70,8 +70,9 @@ server/
                      1 auto-retry, failure screenshots to data/media/diag/
   ui/                index.html + app.js + style.css — vanilla JS, no build step
 tools/               diagnostics (login-check JS smoke test, login screenshot)
-tests/               pytest suite (run: .venv/Scripts/pytest on Windows,
-                     .venv/bin/pytest on Linux) (25 tests)
+tests/               pytest suite — JANGAN tulis jumlahnya di sini
+                     (sering berubah); jumlah aktual = `pytest -q` terakhir.
+                     Windows: .venv/Scripts/pytest · Linux: .venv/bin/pytest (25 tests)
 run.py               uvicorn entry (FORGE_PORT, default 8790)
 start.bat / stop.bat Windows launch/stop (stop kills the FORGE_PORT listener;
                      never touches Chrome)
@@ -218,6 +219,12 @@ MUST keep working there — meaning:
   ToS — that risk is theirs. Don't add credential-harvesting, mass-follower
   or evasion features beyond the stealth needed to keep sessions working.
 - UI strings are Indonesian; code identifiers and comments are English.
+- NEVER edit source via one-shot string-replace patcher scripts
+  (tools/patch_api.py caused two silent no-op bugs and is deleted). Use
+  direct edits; every new endpoint MUST have a TestClient test that really
+  calls it.
+- Scheduling tz: settings.schedule_tz (default Asia/Jakarta) — naive
+  datetime-local input is interpreted in THAT zone, not server-local.
 - When you change architecture, update this file AND `README.md` — note
   README.md is owner-local (gitignored, deliberately not public) but it IS
   the canonical run/deploy reference (Linux/VM commands, CHROME, NO_PROXY,

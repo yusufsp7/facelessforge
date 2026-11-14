@@ -7,8 +7,8 @@ const api = async (path, opts = {}) => {
   const tok = localStorage.getItem('forge_token');
   if (tok) headers['X-Forge-Token'] = tok;
   const res = await fetch(path, { ...opts, headers });
-  if (res.status === 401) {
-    const t = prompt('Server butuh token API (header X-Forge-Token):');
+  if (res.status === 401 && !headers['X-Forge-Token']) {
+    const t = await inlineTokenPrompt();  // prompt() tidak andal di UI embed
     if (t) {
       localStorage.setItem('forge_token', t.trim());
       headers['X-Forge-Token'] = t.trim();
@@ -508,6 +508,25 @@ $('#update-auto').addEventListener('change', async (e) => {
     body: JSON.stringify({ enabled: e.target.checked }) });
   refreshUpdate();
 });
+
+/* ---------- token inline (401 non-localhost) ---------- */
+function inlineTokenPrompt() {
+  return new Promise((resolve) => {
+    const box = document.createElement('div');
+    box.className = 'modal';
+    box.innerHTML = `<div class="modal-body">
+      <h3>Token API dibutuhkan</h3>
+      <p class="hint">Server menuntut header X-Forge-Token (non-localhost).
+      Token ada di log server pertama kali (data/.api-token).</p>
+      <input type="text" id="tok-input" style="width:100%">
+      <div class="row end"><button id="tok-ok" class="primary">Simpan</button></div>
+    </div>`;
+    document.body.appendChild(box);
+    const done = (v) => { box.remove(); resolve(v); };
+    box.querySelector('#tok-ok').onclick = () => done(box.querySelector('#tok-input').value);
+    box.querySelector('#tok-input').focus();
+  });
+}
 
 /* ---------- helpers ---------- */
 function esc(s) {

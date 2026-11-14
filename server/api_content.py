@@ -73,6 +73,16 @@ def api_generation(gen_id: str):
     return g
 
 
+@router.post("/generations/{gen_id}/continue")
+def api_generation_continue(gen_id: str):
+    """Two-phase: lanjutkan pipeline (voice→…→render) dengan file yang
+    sudah ada di project — juga untuk generasi yang terputus restart."""
+    r = generator.continue_generation(gen_id)
+    if r.get("error"):
+        raise HTTPException(400, r["error"])
+    return r
+
+
 class GenerateBody(BaseModel):
     style: str
     topic: str
@@ -197,12 +207,12 @@ class JobBody(BaseModel):
     caption: dict = {}           # {title, description, tags, schedule_native}
 
 
-@router.post("/jobs")
 def _schedule_tz() -> ZoneInfo:
     row = db.one("SELECT v FROM settings WHERE k = 'schedule_tz'")
     return ZoneInfo(row["v"] if row else "Asia/Jakarta")
 
 
+@router.post("/jobs")
 def api_create_jobs(body: JobBody):
     asset = db.one("SELECT * FROM assets WHERE id = ?", (body.asset_id,))
     if not asset:

@@ -42,7 +42,7 @@ PLATFORM_LOCKS = PlatformLocks()
 
 class ConcurrencyCap:
     def __init__(self, limit: int):
-        self.sem = threading.Semaphore(max(2, limit))
+        self.sem = threading.Semaphore(max(1, limit))  # honor tuning (E28)
 
 
 def _default_cap() -> ConcurrencyCap:

@@ -23,7 +23,9 @@ from .worker import WORKER
 async def lifespan(app: FastAPI):
     db.init_db()
     WORKER.start()
+    generator.resume_active_generations()  # B5: lanjutkan render terputus
     from . import updater
+    updater.watchdog_check()  # B6: verifikasi health pasca-update / rollback
     updater.start_auto_loop()
     yield
     WORKER.stop()
@@ -63,25 +65,6 @@ async def token_guard(request: Request, call_next):
 def api_health():
     from . import updater
     return {"ok": True, "head": updater.check().get("local_head", "")}
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    db.init_db()
-    WORKER.start()
-    from . import updater
-    updater.start_auto_loop()
-    # Pre-render hover previews — but NOT on GPU-less machines (software GL
-    # burns the few shared cores for many minutes on boot); there they render
-    # lazily on first hover instead.
-    if not generator.software_gl():
-        for sid in generator.STYLES:
-            generator.ensure_preview(sid)
-
-
-@app.on_event("shutdown")
-def _shutdown() -> None:
-    WORKER.stop()
 
 
 # ---------------------------------------------------------------- platforms

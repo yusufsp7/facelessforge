@@ -470,7 +470,8 @@ def generate(spec: dict) -> str:
         raise ValueError(f"style tak dikenal: {spec.get('style')}")
     meta = {k: spec.get(k) for k in ("title", "description", "tags",
                                      "account_key", "topic_code",
-                                     "planned_time") if spec.get(k)}
+                                     "planned_time", "voice", "length_s",
+                                     "end_line") if spec.get(k)}
     mode = "prepare" if spec.get("mode") == "prepare" else "auto"
     _set(gen_id, style=spec.get("style"), topic=spec.get("topic") or "",
          status="queued", detail="", progress=2, asset_id=None,
@@ -486,7 +487,10 @@ def continue_generation(gen_id: str) -> dict:
     g = _load_gen(gen_id)
     if not g:
         return {"error": "generation tidak ada"}
-    if g["status"] not in ("prepared", "failed", "halted"):
+    non_terminal = ("prepared", "failed", "halted", "queued", "voice",
+                    "timing", "checking", "cues", "mix", "rendering",
+                    "scaffolding", "writing")
+    if g["status"] not in non_terminal:
         return {"error": f"status {g['status']} tidak bisa dilanjutkan"}
     if not os.path.isdir(g.get("project_dir") or ""):
         return {"error": "project_dir hilang — tidak ada yang bisa dilanjutkan"}
@@ -495,6 +499,25 @@ def continue_generation(gen_id: str) -> dict:
         _genq.append(gen_id)
     _start_gen_worker()
     return {"ok": True, "gen_id": gen_id}
+
+
+def resume_active_generations() -> int:
+    """B5: generasi non-terminal yang mati karena restart/reboot diantrekan
+    ulang saat startup — checkpoint chunk membuat render melanjutkan."""
+    rows = db.rows("SELECT id, status FROM generations")
+    terminal = ("done", "failed", "cancelled")
+    n = 0
+    for r in rows:
+        if r["status"] not in terminal:
+            with _genq_lock:
+                _genq.append(r["id"])
+            _set(r["id"], status="queued",
+                 detail="dipulihkan setelah restart — lanjut checkpoint")
+            n += 1
+    if n:
+        db.log_event(None, "generations_recovered", {"count": n})
+    _start_gen_worker()
+    return n
 
 
 def _start_gen_worker() -> None:
@@ -602,13 +625,14 @@ def _pipeline(g: dict) -> None:
         raise RuntimeError(f"mix gagal: {out[-300]}")
 
     mp4 = _chunked_render(gen_id, proj, spec)
+    dur, dur_source = _expected_duration(proj)
     _set(gen_id, status="qc", detail="QC (ffprobe + contact sheet)…",
          progress=92)
 
     dst = os.path.join(str(paths.media_dir()), f"short-{gen_id}.mp4")
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copy2(mp4, dst)
-    qc = qc_validate(dst, spec)
+    qc = qc_validate(dst, expected_s=dur, dur_source=dur_source)
     qc_sheet = _contact_sheet(gen_id, projw)
     asset_id = os.urandom(8).hex()
     title = ((g.get("meta") or {}).get("title") or spec["topic"]
@@ -624,7 +648,10 @@ def _pipeline(g: dict) -> None:
             "account_key": (g.get("meta") or {}).get("account_key", ""),
             "topic_code": (g.get("meta") or {}).get("topic_code", ""),
             "planned_time": (g.get("meta") or {}).get("planned_time", ""),
-            "qc": qc, "qc_sheet": qc_sheet, "duration_s": qc.get("duration"),
+            "qc": qc,
+            "qc_sheet": _persist_qc_sheet(qc_sheet, asset_id),
+            "duration_s": qc.get("duration"),
+            "expected_s": dur, "dur_source": dur_source,
         }, ensure_ascii=False),
         "qc_status": "pending",
         "created_at": db.now_iso(),
@@ -634,15 +661,20 @@ def _pipeline(g: dict) -> None:
                                      "qc": qc.get("ok")})
     _set(gen_id, status="done", progress=100, detail="Selesai (QC pending)",
          asset_id=asset_id)
-    _cleanup_dir(proj)
+    # B4: project dipertahankan sampai QC disetujui/ditolak — hapus hanya
+    # saat approved (rejected ditahan untuk perbaikan; retensi manual).
+    if qc.get("ok") and not keep_projects():
+        shutil.rmtree(proj, ignore_errors=True)
 
 
 def _chunked_render(gen_id: str, proj: str, spec: dict) -> str:
     """Render in 4-8s chunks with per-chunk ffprobe + checkpoint + resume."""
     projw = _win_path(proj)
     fps = 24 if software_gl() else 30
-    dur = _probe_duration(os.path.join(proj, "data", "lines.json")) \
-        or _script_duration(proj) or 40.0
+    dur, dur_source = _expected_duration(proj)  # B3: cues/mix, bukan estimasi
+    if dur_source == "estimate-lines":
+        db.log_event(None, "duration_fallback_warning",
+                     {"gen": gen_id, "dur": dur})
     n_chunks = max(1, -(-int(dur * 100) // int(CHUNK_SECONDS * 100)))
     chunks_dir = os.path.join(proj, "renders", "chunks")
     os.makedirs(chunks_dir, exist_ok=True)
@@ -664,8 +696,10 @@ def _chunked_render(gen_id: str, proj: str, spec: dict) -> str:
             break
         attempt = 0
         while True:
+            # full quality (CRF 18 / jpeg 0.93); kualitas draft hanya untuk
+            # preview MP4, bukan render final.
             rc, output = _bash(f'node "{projw}/tools/capture.mjs" video '
-                               f'"{_win_path(out)}" {a0} {a1} --draft',
+                               f'"{_win_path(out)}" {a0} {a1}',
                                cwd=projw, timeout=CHUNK_TIMEOUT_S,
                                env_extra=_render_env(fps))
             if rc == 0 and _valid_mp4(out):
@@ -698,6 +732,27 @@ def _chunked_render(gen_id: str, proj: str, spec: dict) -> str:
     return final
 
 
+def _expected_duration(proj: str) -> tuple[float, str]:
+    """B3: durasi WAJIB dari data pasti pre-render — cues.json "duration"
+    ( aktual), lalu ffprobe data/mix.wav. Estimasi baris hanya fallback
+    terakhir (dengan warning dari pemanggil)."""
+    try:
+        cues = json.load(open(os.path.join(proj, "data", "cues.json"),
+                              encoding="utf-8"))
+        d = cues.get("duration")
+        if d:
+            return float(d) + 0.5, "cues"  # +tail outro kecil
+    except Exception:
+        pass
+    d = _probe_duration(os.path.join(proj, "data", "mix.wav"))
+    if d:
+        return float(d), "mix"
+    est = _script_duration(proj)
+    if est:
+        return est, "estimate-lines"
+    return 40.0, "default"
+
+
 def _script_duration(proj: str) -> float | None:
     try:
         s = json.load(open(os.path.join(proj, "script.json"), encoding="utf-8"))
@@ -728,8 +783,11 @@ def _valid_mp4(path: str) -> bool:
         return False
 
 
-def qc_validate(path: str, spec: dict) -> dict:
-    """ffprobe acceptance: 1080×1920 (or ≥), h264, has audio, duration sane."""
+def qc_validate(path: str, expected_s: float | None = None,
+                dur_source: str = "", spec: dict | None = None) -> dict:
+    """ffprobe acceptance: 1080×1920 (≥), h264, audio, duration — dan (B3)
+    durasi hasil render harus cocok durasi harapan (cues/mix) ±1 dtk atau
+    ±3%; di luar itu qc.ok=false dengan alasan eksplisit."""
     rc, out = _bash(
         f'ffprobe -v error -show_entries stream=codec_type,codec_name,width,'
         f'height -show_entries format=duration -of json "{_win_path(path)}"',
@@ -751,14 +809,32 @@ def qc_validate(path: str, spec: dict) -> dict:
             "audio": bool(a) and a.get("codec_name") in ("aac", "opus"),
             "duration": duration > 3,
         }
+        if expected_s:
+            tol = max(1.0, expected_s * 0.03)
+            checks["duration_match"] = abs(duration - expected_s) <= tol
         result = {"ok": all(checks.values()), "checks": checks,
                   "width": v.get("width"), "height": v.get("height"),
                   "video_codec": v.get("codec_name"),
                   "audio_codec": (a or {}).get("codec_name"),
                   "duration": round(duration, 1)}
+        if expected_s and not checks["duration_match"]:
+            result["error"] = (f"durasi render {duration:.1f}s ≠ harapan "
+                               f"{expected_s:.1f}s (sumber {dur_source})")
     except Exception as e:
         result["error"] = repr(e)[:200]
     return result
+
+
+def _persist_qc_sheet(sheet_path: str, asset_id: str) -> str:
+    """B4: sheet disalin ke media persisten — project boleh terhapus."""
+    if sheet_path and os.path.isfile(sheet_path):
+        dst = os.path.join(str(paths.media_dir()), f"qc-{asset_id}.jpg")
+        try:
+            shutil.copy2(sheet_path, dst)
+            return dst
+        except Exception:
+            pass
+    return ""
 
 
 def _contact_sheet(gen_id: str, projw: str) -> str:

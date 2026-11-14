@@ -9,6 +9,7 @@ runs two browsers at once.
 """
 import os
 import re
+import sys
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -72,7 +73,10 @@ class PlaywrightSession:
 
     def __init__(self, profile_dir: str, headless: bool | None = None):
         self.profile_dir = profile_dir
-        env_headless = os.environ.get("FORGE_HEADLESS") == "1"
+        # B9: Linux tanpa X server tidak bisa headed — headless jadi default aman
+        env_headless = (os.environ.get("FORGE_HEADLESS") == "1"
+                        or (sys.platform.startswith("linux")
+                            and not os.environ.get("DISPLAY")))
         self.headless = env_headless if headless is None else headless
         self._pw = None
         self._context = None

@@ -108,8 +108,14 @@ class AccountManager:
 
     # -- launch ----------------------------------------------------------
 
-    def _launch(self, pw, url: str, profile: str, headless: bool = False):
+    def _launch(self, pw, url: str, profile: str,
+                headless: bool | None = None):
         """Open a persistent Chrome context. Returns (context, page)."""
+        if headless is None:
+            # B9: aman-kan Linux tanpa X server
+            headless = (os.environ.get("FORGE_HEADLESS") == "1"
+                        or (sys.platform.startswith("linux")
+                            and not os.environ.get("DISPLAY")))
         exe = find_chrome()
         kwargs = dict(
             user_data_dir=profile,
