@@ -1,0 +1,14 @@
+# runtime state — JANGAN pernah commit: profil login Chrome = cookies akun
+data/
+.venv/
+__pycache__/
+*.pyc
+*.log
+
+# dokumentasi internal (owner-only): repo sengaja tanpa README
+README.md
+docs/
+
+# OS junk
+Thumbs.db
+.DS_Store

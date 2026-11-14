@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FacelessForge — Studio Short & Akun Sosmed</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">🎬 FacelessForge</div>
+  <nav>
+    <button data-tab="akun" class="tab active">Akun</button>
+    <button data-tab="generator" class="tab">Generator</button>
+    <button data-tab="konten" class="tab">Konten</button>
+    <button data-tab="jadwal" class="tab">Jadwal</button>
+    <button data-tab="riwayat" class="tab">Riwayat</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ================= AKUN ================= -->
+  <section id="tab-akun" class="panel active">
+    <div class="row">
+      <h2>Akun Sosial Media</h2>
+      <button id="btn-refresh-accounts" class="ghost">Muat ulang</button>
+    </div>
+    <p class="hint">Login pakai Chrome asli + profil per akun (ala AutoClip).
+      Klik <b>Hubungkan</b> → Chrome terbuka → login manual → sesi tersimpan
+      permanen, tanpa API key.</p>
+    <div id="platform-cards" class="cards"></div>
+    <h3 style="margin-top:20px">Akun tersambung</h3>
+    <table id="accounts-table">
+      <thead><tr><th>Platform</th><th>Label</th><th>Nama akun</th>
+      <th>Status</th><th>Aksi</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- ================= GENERATOR ================= -->
+  <section id="tab-generator" class="panel">
+    <div class="row">
+      <h2>Generator — Faceless Shorts</h2>
+      <button id="btn-generator-status" class="ghost">Cek kesiapan</button>
+    </div>
+    <div id="gen-ready" class="hint"></div>
+    <div id="gen-setup-row" class="row hidden">
+      <button id="btn-generator-setup" class="primary">Setup Generator
+        (unduh voice + whisper ~0.9GB, sekali saja)</button>
+      <span id="gen-setup-log" class="hint"></span>
+    </div>
+
+    <h3>1 · Pilih style</h3>
+    <div id="styles-grid" class="style-grid"></div>
+
+    <h3>2 · Topik video</h3>
+    <form id="gen-form">
+      <label>Topik / ide
+        <textarea id="gen-topic" rows="3"
+          placeholder="mis. What happens if you hold your breath too long?"></textarea>
+      </label>
+      <div class="row gap">
+        <label>Voice (pengisi suara AI)
+          <select id="gen-voice"></select>
+        </label>
+        <label>Durasi (detik) <input id="gen-length" type="number"
+          value="35" min="15" max="60"></label>
+        <label>Kalimat penutup <input id="gen-endline" type="text"
+          placeholder="opsional"></label>
+      </div>
+    </form>
+    <div class="row">
+      <button id="btn-generate" class="primary">Generate video</button>
+      <span id="gen-status" class="hint"></span>
+    </div>
+    <div id="gens-list"></div>
+  </section>
+
+  <!-- ================= KONTEN ================= -->
+  <section id="tab-konten" class="panel">
+    <div class="row">
+      <h2>Konten (asset)</h2>
+      <button id="btn-refresh-assets" class="ghost">Muat ulang</button>
+    </div>
+    <div id="assets-grid" class="cards"></div>
+
+    <div id="schedule-modal" class="modal hidden">
+      <div class="modal-body">
+        <h3>Jadwalkan Upload</h3>
+        <div id="sched-accounts"></div>
+        <div class="row gap">
+          <label>Mode
+            <select id="sched-mode">
+              <option value="now">Upload sekarang</option>
+              <option value="at">Pada waktu</option>
+            </select>
+          </label>
+          <label>Waktu <input type="datetime-local" id="sched-at"></label>
+          <label>Visibility
+            <select id="sched-visibility">
+              <option value="public">Public</option>
+              <option value="unlisted">Unlisted</option>
+              <option value="private">Private</option>
+            </select>
+          </label>
+        </div>
+        <div class="row gap">
+          <label>Judul <input id="sched-title" type="text"></label>
+          <label>Deskripsi <textarea id="sched-desc"></textarea></label>
+          <label>Tags (koma) <input id="sched-tags" type="text"></label>
+        </div>
+        <label class="check"><input type="checkbox" id="sched-native">
+          Jadwalkan native platform (kalau didukung)</label>
+        <div class="row end">
+          <button id="btn-sched-cancel" class="ghost">Batal</button>
+          <button id="btn-sched-save" class="primary">Jadwalkan</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= JADWAL ================= -->
+  <section id="tab-jadwal" class="panel">
+    <div class="row">
+      <h2>Antrean & Jadwal</h2>
+      <button id="btn-refresh-jobs" class="ghost">Muat ulang</button>
+    </div>
+    <table id="jobs-table">
+      <thead><tr><th>Job</th><th>Asset</th><th>Akun</th><th>Jadwal</th>
+      <th>Status</th><th>Progress</th><th>Aksi</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <!-- ================= RIWAYAT ================= -->
+  <section id="tab-riwayat" class="panel">
+    <div class="row">
+      <h2>Riwayat</h2>
+      <button id="btn-refresh-history" class="ghost">Muat ulang</button>
+    </div>
+    <table id="history-table">
+      <thead><tr><th>Waktu</th><th>Event</th><th>Detail</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<footer><span id="conn-status">…</span></footer>
+<script src="/ui/app.js"></script>
+</body>
+</html>
