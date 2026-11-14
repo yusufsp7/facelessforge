@@ -198,10 +198,20 @@ def _post_pull_checks() -> tuple[bool, str]:
 def apply() -> dict:
     """Pull, install deps, restart this process. Runs in a thread so the HTTP
     response can be sent first; the UI then polls /api/update until the new
-    process reports a new local_head."""
+    process reports a new local_head.
+
+    R8-forensics: update DITOLAK bila working tree kotor — pull/reset --hard
+    di rantai update MUSNAHKAN pekerjaan belum-commit (terbukti via reflog:
+    tiga reset --hard dari updater di laptop dev)."""
     global _updating
     if not supported():
         return {"ok": False, "error": "bukan git clone — update via git tidak tersedia"}
+    rc, dirty = _git(["status", "--porcelain"], timeout=30)
+    if rc == 0 and dirty.strip():
+        return {"ok": False, "error": (
+            "working tree kotor — ada perubahan belum di-commit "
+            f"({len(dirty.strip().splitlines())} file). Commit atau simpan "
+            "dulu, baru jalankan update.")}
     with _lock:
         if _updating:
             return {"ok": False, "error": "update sedang berjalan"}

@@ -77,12 +77,19 @@ class TestBug3PartialLivePut(unittest.TestCase):
 
 class TestBug1UpdaterApply(unittest.TestCase):
     def test_apply_exists_and_gates(self):
+        """R8: TIDAK boleh memicu update sungguhan dari tes — apply() nyata
+        menjalankan git pull/reset yang pernah menelan edit uncommitted
+        (terbukti di reflog). Gate dirty-tree diuji dengan _git palsu:
+        deterministik, tanpa operasi git nyata."""
+        from unittest import mock as _mock
         from server import updater
         self.assertTrue(callable(updater.apply))
-        # repo ada → ok/restarting; bukan "no attribute"
-        r = updater.apply()
-        self.assertIn(r.get("ok"), (True, False))
-        updater._updating = False  # reset state untuk test lain
+        with _mock.patch.object(updater, "_git",
+                                lambda *a, **k: (0, " M server/x.py")):
+            r = updater.apply()
+            self.assertFalse(r.get("restarting"))
+            self.assertIn("kotor", r.get("error", ""))
+        self.assertFalse(updater._updating)  # tak ada thread update nyata
 
 
 if __name__ == "__main__":
