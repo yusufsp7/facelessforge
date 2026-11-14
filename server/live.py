@@ -329,13 +329,15 @@ def _parse_progress(line: str, state: dict) -> None:
 
 
 def _read_encoder_progress(key: str, p: dict) -> None:
-    """R7: bytes/status dibaca dari log ffmpeg (size= kB) — proses hidup
-    saja tidak cukup; size bertambah = data benar-benar mengalir."""
+    """R7: bytes/status dibaca dari log ffmpeg — proses hidup saja tidak
+    cukup; size bertambah = data benar-benar mengalir.
+    Nit ronde-8: ffmpeg build ini menulis "size=    6982KiB" (KiB, bukan kB)
+    dan baris terakhir memakai prefiks "Lsize=" — regex menerima keduanya."""
     try:
         with open(p["log_path"], "rb") as f:
             f.seek(max(0, os.path.getsize(p["log_path"]) - 65536))
             tail = f.read().decode("utf-8", errors="replace")
-        matches = re.findall(r"size=\s*(\d+)kB", tail)
+        matches = re.findall(r"(?:L)?size=\s*(\d+)\s*(?:kB|KiB)", tail)
         if matches:
             size_kb = int(matches[-1])
             if size_kb * 1024 > p.get("bytes", 0):

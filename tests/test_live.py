@@ -97,3 +97,45 @@ class TestDesiredOnPersistence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestProgressRegexRealFfmpeg(unittest.TestCase):
+    """R8-nit: regex harus cocok baris statistik ffmpeg ASLI — KiB (bukan
+    kB) dan prefiks Lsize= pada baris terakhir."""
+
+    def _run(self, lines):
+        p = {"log_path": os.path.join(os.environ["FORGE_DATA"], "enc.log"),
+             "bytes": 0, "last_progress_ts": 0}
+        open(p["log_path"], "w", encoding="utf-8").write("\n".join(lines))
+        live._read_encoder_progress("youtube:x", p)
+        return p
+
+    def test_real_kib_line(self):
+        p = self._run([
+            "size=    6982KiB time=00:00:41.05 bitrate=1391.7kbits/s speed=1.04x",
+        ])
+        self.assertEqual(p["bytes"], 6982 * 1024)
+        self.assertGreater(p["last_progress_ts"], 0)
+
+    def test_real_kib_line_grows(self):
+        p = self._run([
+            "size=    3012KiB time=00:00:18.10 bitrate=1363.1kbits/s speed=1.05x",
+            "size=    6982KiB time=00:00:41.05 bitrate=1391.7kbits/s speed=1.04x",
+        ])
+        self.assertEqual(p["bytes"], 6982 * 1024)
+
+    def test_final_lsize_line(self):
+        p = self._run([
+            "size=    7082KiB time=00:00:41.66 bitrate=1391.4kbits/s speed=1.04x",
+            "[out#0/flv] video:6700kB audio:120kB subtitle:0kB other:0kB",
+            "Lsize=    7082KiB time=00:00:41.66 bitrate=1391.4kbits/s speed=1.04x",
+        ])
+        self.assertEqual(p["bytes"], 7082 * 1024)
+
+    def test_old_kib_style_still_accepted(self):
+        p = self._run(["size=    1234kB time=00:00:05.00 bitrate=800.0kbits/s"])
+        self.assertEqual(p["bytes"], 1234 * 1024)
+
+    def test_no_progress_lines_no_bytes(self):
+        p = self._run(["frame= 42 fps=24 q=-1.0 size=N/A time=00:00:01.75"])
+        self.assertEqual(p["bytes"], 0)
