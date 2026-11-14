@@ -115,12 +115,73 @@ class TestBug3Duration(unittest.TestCase):
     """Durasi WAJIB dari cues.json (bukan estimasi) + QC toleransi."""
 
     def test_expected_duration_from_cues(self):
-        proj = os.path.join(os.path.dirname(generator.__file__),
-                            "..", "vendor", "faceless-shorts", "styles",
-                            "inside-out", "example")
-        d, src = generator._expected_duration(os.path.abspath(proj))
+        """R3: fixture sintetis di tmp — TIDAK membaca folder vendor (clone
+        bersih harus hijau)."""
+        import json as _json
+        proj = tempfile.mkdtemp(dir=os.environ["FORGE_DATA"])
+        os.makedirs(os.path.join(proj, "data"), exist_ok=True)
+        _json.dump({"duration": 36.454},
+                   open(os.path.join(proj, "data", "cues.json"), "w"))
+        d, src = generator._expected_duration(proj)
         self.assertEqual(src, "cues")
         self.assertAlmostEqual(d, 36.454, delta=0.01)
+
+    def test_expected_duration_never_exceeds_mix(self):
+        """R2: durasi harapan tidak boleh melebihi mix.wav bila ada."""
+        import json as _json
+        import subprocess as _sp
+        proj = tempfile.mkdtemp(dir=os.environ["FORGE_DATA"])
+        os.makedirs(os.path.join(proj, "data"), exist_ok=True)
+        _json.dump({"duration": 99.0},
+                   open(os.path.join(proj, "data", "cues.json"), "w"))
+        wav = os.path.join(proj, "data", "mix.wav")
+        try:
+            _sp.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                     "sine=duration=6", "-y", wav],
+                    check=True, capture_output=True, timeout=60)
+        except Exception:
+            self.skipTest("ffmpeg tidak tersedia")
+        d, src = generator._expected_duration(proj)
+        self.assertLessEqual(d, 6.0)  # di-clamp ke mix, bukan 99
+
+    def test_chunk_windows_no_micro_tail(self):
+        """R2: durasi 36.454 → tidak ada jendela < 1,5 dtk (tail digabung)."""
+        w = generator._chunk_windows(36.454)
+        self.assertGreater(len(w), 0)
+        for a0, a1 in w:
+            self.assertGreaterEqual(a1 - a0, 1.5)
+        self.assertAlmostEqual(w[-1][1], 36.454, delta=0.01)
+        # kontinuitas: a0 chunk berikut = a1 sebelumnya
+        for i in range(1, len(w)):
+            self.assertEqual(w[i][0], w[i - 1][1])
+
+    def test_r1_short_output_not_indexerror(self):
+        """R1: error subprocess pendek → pesan asli ('boom'), bukan
+        IndexError dari indeks [-300]."""
+        orig = generator._bash
+        generator._bash = lambda *a, **k: (1, "boom")
+        try:
+            g = {"id": "g-r1", "style": "inside-out", "topic": "",
+                 "status": "queued", "mode": "auto", "meta": {},
+                 "project_dir": tempfile.mkdtemp(dir=os.environ["FORGE_DATA"])}
+            with self.assertRaises(RuntimeError) as ctx:
+                generator._pipeline(g)
+            self.assertIn("boom", str(ctx.exception))
+            self.assertNotIn("IndexError", str(ctx.exception))
+        finally:
+            generator._bash = orig
+
+    def test_r4_sweep_skips_prepared(self):
+        db.init_db()
+        proj = tempfile.mkdtemp(dir=os.environ["FORGE_DATA"])
+        db.upsert("generations", {
+            "id": "g-prep", "style": "tall-tale", "topic": "x",
+            "status": "prepared", "mode": "prepare", "project_dir": proj,
+            "created_at": db.now_iso(), "updated_at": db.now_iso()},
+            conflict_col="id")
+        generator.resume_active_generations()
+        g = generator.get_gen("g-prep")
+        self.assertEqual(g["status"], "prepared")  # tetap menunggu penulis
 
     def test_qc_tolerance_logic(self):
         import subprocess as sp

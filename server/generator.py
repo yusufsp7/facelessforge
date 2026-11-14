@@ -19,6 +19,7 @@ Proven-reliable pipeline on the GPU-less VM (see AGENTS.md):
   - a single render runs at a time (software-GL machine); queued ones wait.
 """
 import glob
+import datetime
 import json
 import os
 import shutil
@@ -100,6 +101,21 @@ def max_concurrency() -> int:
         return max(1, int(env))
     cores = os.cpu_count() or 2
     return 2 if cores >= 4 else 1
+
+
+def _stage_fresh(proj: str, output: str) -> bool:
+    """R5: tahap boleh dilewati bila outputnya sudah ada dan lebih baru
+    dari sumbernya (script.json / src/shots.js)."""
+    out = os.path.join(proj, output)
+    if not os.path.isfile(out):
+        return False
+    srcs = [os.path.join(proj, "script.json"),
+            os.path.join(proj, "src", "shots.js")]
+    srcs = [x for x in srcs if os.path.isfile(x)]
+    if not srcs:
+        return True  # tanpa sumber di disk (sudah terkonsumsi) — percaya output
+    out_m = os.path.getmtime(out)
+    return all(out_m >= os.path.getmtime(x) for x in srcs)
 
 
 def _proj_dir(gen_id: str) -> str:
@@ -302,7 +318,7 @@ def _render_preview(style_id: str) -> None:
                     f'"preview-{style_id}" --dir "{_win_path(str(VIDEOS_DIR))}"',
                     timeout=120)
     if rc != 0:
-        raise RuntimeError(f"new_video: {out[-200]}")
+        raise RuntimeError(f"new_video: {out[-200:]}")
     try:
         seconds, fps = _preview_params()
         proj = _win_path(str(tmp_dir))
@@ -311,7 +327,7 @@ def _render_preview(style_id: str) -> None:
                         cwd=proj, timeout=CHUNK_TIMEOUT_S,
                         env_extra=_render_env(fps))
         if rc != 0:
-            raise RuntimeError(f"capture: {out[-300]}")
+            raise RuntimeError(f"capture: {out[-300:]}")
         src = os.path.join(str(tmp_dir), "renders", "preview.mp4")
         if not os.path.isfile(src):
             raise RuntimeError("preview.mp4 tidak dihasilkan")
@@ -372,7 +388,7 @@ def _write_script(spec: dict, proj_dir: str) -> dict:
     proc = subprocess.run(hook, input=payload, capture_output=True,
                           text=True, timeout=1800, shell=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"writer hook gagal: {proc.stderr[-300]}")
+        raise RuntimeError(f"writer hook gagal: {proc.stderr[-300:]}")
     data = json.loads(proc.stdout)
     if not data.get("script") or "shots_js" not in data:
         raise RuntimeError("writer hook output tidak lengkap (butuh "
@@ -502,18 +518,23 @@ def continue_generation(gen_id: str) -> dict:
 
 
 def resume_active_generations() -> int:
-    """B5: generasi non-terminal yang mati karena restart/reboot diantrekan
-    ulang saat startup — checkpoint chunk membuat render melanjutkan."""
-    rows = db.rows("SELECT id, status FROM generations")
+    """B5/R4: generasi yang TERPUTUS di tengah pipeline diantrekan ulang
+    saat startup. Status 'prepared' DIKECUALIKAN — itu berarti menunggu
+    penulis eksternal, hanya boleh bergerak via POST continue eksplisit."""
+    rows = db.rows("SELECT id, status, mode FROM generations")
     terminal = ("done", "failed", "cancelled")
     n = 0
     for r in rows:
-        if r["status"] not in terminal:
-            with _genq_lock:
-                _genq.append(r["id"])
-            _set(r["id"], status="queued",
-                 detail="dipulihkan setelah restart — lanjut checkpoint")
-            n += 1
+        if r["status"] in terminal:
+            continue
+        if r["status"] == "prepared" or (r.get("mode") == "prepare"
+                                         and r["status"] != "queued"):
+            continue  # menunggu penulis eksternal — jangan render example
+        with _genq_lock:
+            _genq.append(r["id"])
+        _set(r["id"], status="queued",
+             detail="dipulihkan setelah restart — lanjut checkpoint")
+        n += 1
     if n:
         db.log_event(None, "generations_recovered", {"count": n})
     _start_gen_worker()
@@ -576,7 +597,7 @@ def _pipeline(g: dict) -> None:
                         f'"{spec["style"]}" "forge-{gen_id}" '
                         f'--dir "{_win_path(str(VIDEOS_DIR))}"', timeout=120)
         if rc != 0:
-            raise RuntimeError(f"new_video gagal: {out[-300]}")
+            raise RuntimeError(f"new_video gagal: {out[-300:]}")
         if g.get("mode") == "prepare":
             _write_script(spec, proj)  # example-mode keeps example files
             _set(gen_id, status="prepared",
@@ -592,37 +613,51 @@ def _pipeline(g: dict) -> None:
             raise RuntimeError("script.json belum ada di project")
         _set(gen_id, mode="continue")
 
-    _set(gen_id, status="voice", detail="Rekaman suara AI (Kokoro)…",
-         progress=20)
-    rc, out = _bash(f'bash "{skill}/scripts/py" "{skill}/scripts/voice.py" '
-                    f'"{projw}"', timeout=900)
-    if rc != 0:
-        raise RuntimeError(f"voice gagal: {out[-300]}")
+    if _stage_fresh(proj, os.path.join("data", "narration.wav")):
+        _set(gen_id, detail="voice: narration.wav sudah ada — dilewati")
+    else:
+        _set(gen_id, status="voice", detail="Rekaman suara AI (Kokoro)…",
+             progress=20)
+        rc, out = _bash(f'bash "{skill}/scripts/py" "{skill}/scripts/voice.py" '
+                        f'"{projw}"', timeout=900)
+        if rc != 0:
+            raise RuntimeError(f"voice gagal: {out[-300:]}")
 
-    _set(gen_id, status="timing", detail="Word timing (Whisper)…",
-         progress=30)
-    rc, out = _bash(f'bash "{skill}/scripts/py" "{skill}/scripts/words.py" '
-                    f'"{projw}"', timeout=900)
-    if rc != 0:
-        raise RuntimeError(f"words gagal: {out[-300]}")
+    if _stage_fresh(proj, os.path.join("data", "words.json")):
+        _set(gen_id, detail="timing: words.json sudah ada — dilewati")
+    else:
+        _set(gen_id, status="timing", detail="Word timing (Whisper)…",
+             progress=30)
+        rc, out = _bash(f'bash "{skill}/scripts/py" "{skill}/scripts/words.py" '
+                        f'"{projw}"', timeout=900)
+        if rc != 0:
+            raise RuntimeError(f"words gagal: {out[-300:]}")
 
     _set(gen_id, status="checking", detail="Capture check…", progress=40)
     rc, out = _bash(f'node "{projw}/tools/capture.mjs" check', cwd=projw,
                     timeout=600, env_extra=_render_env(30))
     if rc != 0:
-        raise RuntimeError(f"capture check gagal: {out[-400]}")
+        raise RuntimeError(f"capture check gagal: {out[-400:]}")
 
-    _set(gen_id, status="cues", detail="Menyusun sound cues…", progress=45)
-    rc, out = _bash(f'node "{projw}/tools/capture.mjs" cues', cwd=projw,
-                    timeout=600, env_extra=_render_env(30))
-    if rc != 0:
-        raise RuntimeError(f"cues gagal: {out[-300]}")
+    if _stage_fresh(proj, os.path.join("data", "cues.json")):
+        _set(gen_id, detail="cues: sudah ada — dilewati")
+    else:
+        _set(gen_id, status="cues", detail="Menyusun sound cues…",
+             progress=45)
+        rc, out = _bash(f'node "{projw}/tools/capture.mjs" cues', cwd=projw,
+                        timeout=600, env_extra=_render_env(30))
+        if rc != 0:
+            raise RuntimeError(f"cues gagal: {out[-300:]}")
 
-    _set(gen_id, status="mix", detail="Soundtrack (procedural)…", progress=50)
-    rc, out = _bash(f'bash "{skill}/scripts/py" "{projw}/tools/mix.py" .',
-                    cwd=projw, timeout=900)
-    if rc != 0:
-        raise RuntimeError(f"mix gagal: {out[-300]}")
+    if _stage_fresh(proj, os.path.join("data", "mix.wav")):
+        _set(gen_id, detail="mix: sudah ada — dilewati")
+    else:
+        _set(gen_id, status="mix", detail="Soundtrack (procedural)…",
+             progress=50)
+        rc, out = _bash(f'bash "{skill}/scripts/py" "{projw}/tools/mix.py" .',
+                        cwd=projw, timeout=900)
+        if rc != 0:
+            raise RuntimeError(f"mix gagal: {out[-300:]}")
 
     mp4 = _chunked_render(gen_id, proj, spec)
     dur, dur_source = _expected_duration(proj)
@@ -661,10 +696,9 @@ def _pipeline(g: dict) -> None:
                                      "qc": qc.get("ok")})
     _set(gen_id, status="done", progress=100, detail="Selesai (QC pending)",
          asset_id=asset_id)
-    # B4: project dipertahankan sampai QC disetujui/ditolak — hapus hanya
-    # saat approved (rejected ditahan untuk perbaikan; retensi manual).
-    if qc.get("ok") and not keep_projects():
-        shutil.rmtree(proj, ignore_errors=True)
+    # R6: project TIDAK dihapus di sini — menunggu keputusan QC manusia
+    # lewat set_qc() (approved → dihapus 24 jam kemudian; rejected →
+    # dipertahankan untuk perbaikan/dirender ulang).
 
 
 def _chunked_render(gen_id: str, proj: str, spec: dict) -> str:
@@ -675,7 +709,8 @@ def _chunked_render(gen_id: str, proj: str, spec: dict) -> str:
     if dur_source == "estimate-lines":
         db.log_event(None, "duration_fallback_warning",
                      {"gen": gen_id, "dur": dur})
-    n_chunks = max(1, -(-int(dur * 100) // int(CHUNK_SECONDS * 100)))
+    windows = _chunk_windows(dur)  # R2: tanpa ekor mikro (<1,5 dtk)
+    n_chunks = len(windows)
     chunks_dir = os.path.join(proj, "renders", "chunks")
     os.makedirs(chunks_dir, exist_ok=True)
     cp_path = os.path.join(proj, "renders", "checkpoint.json")
@@ -685,15 +720,11 @@ def _chunked_render(gen_id: str, proj: str, spec: dict) -> str:
          detail=f"Render chunk (software-GL)…" if software_gl()
          else "Render video (Chrome+ffmpeg)…",
          progress=55, chunks_total=n_chunks, chunks_done=len(done))
-    for i in range(n_chunks):
+    for i, (a0, a1) in enumerate(windows):
         key = f"chunk-{i:04d}"
         out = os.path.join(chunks_dir, f"{key}.mp4")
         if key in done and os.path.isfile(out):
             continue
-        a0 = round(i * CHUNK_SECONDS, 2)
-        a1 = round(min((i + 1) * CHUNK_SECONDS, dur), 2)
-        if a1 <= a0:
-            break
         attempt = 0
         while True:
             # full quality (CRF 18 / jpeg 0.93); kualitas draft hanya untuk
@@ -708,7 +739,7 @@ def _chunked_render(gen_id: str, proj: str, spec: dict) -> str:
             if attempt > CHUNK_RETRIES:
                 raise RuntimeError(
                     f"chunk {i} ({a0}-{a1}s) gagal {attempt}x "
-                    f"(livelock/capture error): {output[-300]}")
+                    f"(livelock/capture error): {output[-300:]}")
             db.log_event(None, "chunk_retry",
                          {"gen": gen_id, "chunk": i, "attempt": attempt})
         done.add(key)
@@ -728,29 +759,50 @@ def _chunked_render(gen_id: str, proj: str, spec: dict) -> str:
                     f'"{_win_path(concat_list)}" -c copy -movflags +faststart '
                     f'"{_win_path(final)}"', timeout=300)
     if rc != 0 or not _valid_mp4(final):
-        raise RuntimeError(f"concat gagal: {out[-300]}")
+        raise RuntimeError(f"concat gagal: {out[-300:]}")
     return final
 
 
 def _expected_duration(proj: str) -> tuple[float, str]:
-    """B3: durasi WAJIB dari data pasti pre-render — cues.json "duration"
-    ( aktual), lalu ffprobe data/mix.wav. Estimasi baris hanya fallback
-    terakhir (dengan warning dari pemanggil)."""
+    """B3/R2: durasi WAJIB dari data pasti pre-render — cues.json
+    "duration" (tanpa padding!), lalu ffprobe data/mix.wav; hasil di-clamp
+    agar TIDAK melebihi durasi audio bila file itu ada. Estimasi baris hanya
+    fallback terakhir (dengan warning dari pemanggil)."""
+    d = None
+    src = "mix"
     try:
         cues = json.load(open(os.path.join(proj, "data", "cues.json"),
                               encoding="utf-8"))
-        d = cues.get("duration")
-        if d:
-            return float(d) + 0.5, "cues"  # +tail outro kecil
+        if cues.get("duration"):
+            d = float(cues["duration"])
+            src = "cues"
     except Exception:
         pass
-    d = _probe_duration(os.path.join(proj, "data", "mix.wav"))
+    mix = _probe_duration(os.path.join(proj, "data", "mix.wav"))
+    if mix:
+        # durasi harapan tidak boleh lebih panjang dari audio-nya (R2)
+        d = mix if d is None else min(d, mix)
     if d:
-        return float(d), "mix"
+        return d, src
     est = _script_duration(proj)
     if est:
         return est, "estimate-lines"
     return 40.0, "default"
+
+
+def _chunk_windows(dur: float, chunk_s: int = CHUNK_SECONDS,
+                   min_tail: float = 1.5) -> list[tuple[float, float]]:
+    """R2: jendela chunk tanpa ekor mikro — tail <1,5 dtk digabung ke chunk
+    sebelumnya (jendela tak harus seragam)."""
+    windows = []
+    a0 = 0.0
+    while a0 < dur - 1e-6:
+        a1 = min(a0 + chunk_s, dur)
+        if dur - a1 < min_tail and a1 < dur:
+            a1 = dur  # sisa kecil: lebarkan chunk ini sampai akhir
+        windows.append((round(a0, 2), round(a1, 2)))
+        a0 = a1
+    return windows
 
 
 def _script_duration(proj: str) -> float | None:
@@ -853,5 +905,47 @@ def asset_approved(asset_id: str) -> bool:
 
 
 def set_qc(asset_id: str, verdict: str) -> None:
-    db.update("assets", asset_id, {"qc_status": verdict}, key_col="id")
+    row = db.one("SELECT * FROM assets WHERE id = ?", (asset_id,))
+    if not row:
+        return
+    meta = {}
+    try:
+        meta = json.loads(row.get("meta_json") or "{}")
+    except Exception:
+        pass
+    meta["qc_decided_at"] = db.now_iso()
+    if verdict == "approved":
+        meta["project_cleanup_after"] = (datetime.datetime.now(
+            datetime.timezone.utc)
+            + datetime.timedelta(hours=24)).isoformat(timespec="seconds")
+    db.update("assets", asset_id, {
+        "qc_status": verdict,
+        "meta_json": json.dumps(meta, ensure_ascii=False)}, key_col="id")
     db.log_event(None, "asset_qc", {"asset": asset_id, "verdict": verdict})
+    _cleanup_decided_projects()
+
+
+def _cleanup_decided_projects() -> int:
+    """R6: hapus project faceless-shorts milik asset yang DIAPPROVE lebih
+    dari 24 jam lalu (retensi untuk pembatalan). Rejected dipertahankan."""
+    if keep_projects():
+        return 0
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(hours=24)).isoformat(timespec="seconds")
+    rows = db.rows("SELECT id, meta_json, qc_status FROM assets "
+                   "WHERE engine LIKE 'faceless-shorts%' "
+                   "AND qc_status = 'approved'")
+    n = 0
+    for r in rows:
+        try:
+            meta = json.loads(r["meta_json"] or "{}")
+        except Exception:
+            continue
+        decided = meta.get("qc_decided_at", "")
+        if not decided or decided > cutoff:
+            continue
+        proj = meta.get("project") or ""
+        if proj and os.path.isdir(proj):
+            shutil.rmtree(proj, ignore_errors=True)
+            n += 1
+    return n

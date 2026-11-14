@@ -163,9 +163,16 @@ Do NOT leave multiple `run.py` instances running — ports collide silently
   token is generated once to `data/.api-token` and printed at first boot.
   Localhost is always exempt. Default bind is 127.0.0.1 (`FORGE_BIND=0.0.0.0`
   to expose). `GET /api/health` is the unauthenticated supervision probe.
-- Generated projects (`data/videos/forge-*`) are deleted after a successful
-  asset copy unless `FORGE_KEEP_PROJECTS=1`. Preview MP4s are cached forever
-  (small); generation rows live in the `generations` table.
+- Generated projects (`data/videos/forge-*`) survive until QC is decided:
+  approved → deleted 24h later (retention for reconsideration), rejected →
+  kept for repair/re-render. `FORGE_KEEP_PROJECTS=1` disables cleanup.
+  Preview MP4s are cached forever (small); generation rows live in the
+  `generations` table.
+- Resume hygiene: pipeline stages (voice/timing/cues/mix) are skipped when
+  their outputs exist and are newer than script.json/shots.js; chunk
+  checkpoint skips already-rendered chunks; startup sweep re-queues
+  interrupted generations but NEVER 'prepared' ones (those wait for an
+  external writer).
 - Linux launchers: `start.sh` / `stop.sh` (pidfile `data/.server.pid`) +
   `deploy/facelessforge.service` (systemd example, MemoryMax=6G).
 - Render is CHUNKED (6s chunks, per-chunk ffprobe + checkpoint, concat -c
