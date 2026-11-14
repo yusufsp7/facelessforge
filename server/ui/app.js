@@ -393,6 +393,78 @@ async function renderHistory() {
 
 /* ---------- settings (kosong — engine auto-detect vendor/) ---------- */
 
+/* ---------- update (GitHub self-updater) ---------- */
+async function refreshUpdate() {
+  const btn = $('#btn-update'), chk = $('#update-auto');
+  if (!btn) return;
+  let st;
+  try { st = await api('/api/update'); } catch (e) { return; }
+  if (!st.supported) {
+    btn.style.display = 'none';
+    $('#update-auto-label').style.display = 'none';
+    return;
+  }
+  chk.checked = !!st.auto;
+  btn.classList.toggle('busy', !!st.updating);
+  btn.classList.toggle('updates', !!st.updates && !st.updating);
+  btn.textContent = st.updating ? '⏳ Update…'
+    : st.updates ? `⬆ Update (${st.behind} baru)`
+    : '⬆ Update';
+  if (st.updates) btn.title = `${st.behind} commit baru di GitHub (origin: ${st.remote_head || '?'}) — klik untuk pasang & restart`;
+  else if (!st.updating) btn.title = 'Cek & pasang update dari GitHub';
+  if (st.applied) {
+    btn.textContent = '✓ terpasang';
+    btn.classList.remove('busy', 'updates');
+  }
+}
+
+$('#btn-update').addEventListener('click', async () => {
+  const btn = $('#btn-update');
+  if (btn.classList.contains('busy')) return;
+  btn.classList.add('busy');
+  btn.textContent = '⏳ cek…';
+  let st;
+  try { st = await api('/api/update/check', { method: 'POST' }); }
+  catch (e) { btn.textContent = '❌ cek gagal'; btn.classList.remove('busy'); return; }
+  if (st.error) {
+    btn.textContent = '❌ ' + (st.error || 'gagal'); btn.classList.remove('busy');
+    return;
+  }
+  if (!st.updates) {
+    btn.textContent = '✓ sudah terbaru';
+    setTimeout(() => { btn.textContent = '⬆ Update'; btn.classList.remove('busy'); }, 3000);
+    return;
+  }
+  if (!confirm(`Ada ${st.behind} commit baru di GitHub. Pasang update & restart server sekarang?`)) {
+    refreshUpdate(); return;
+  }
+  btn.textContent = '⏳ memperbarui & restart…';
+  const r = await api('/api/update/apply', { method: 'POST' });
+  if (!r.ok) { btn.textContent = '❌ ' + (r.error || 'gagal'); btn.classList.remove('busy'); return; }
+  waitRestart(st.local_head);
+});
+
+async function waitRestart(oldHead, tries = 180) {
+  for (let i = 0; i < tries; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    let st;
+    try { st = await api('/api/update'); } catch (e) { continue; } // server sedang restart
+    if (st.local_head && st.local_head !== oldHead) {
+      $('#btn-update').textContent = '✓ terbaru — memuat ulang…';
+      location.reload();
+      return;
+    }
+  }
+  $('#btn-update').textContent = '❌ timeout — cek manual';
+  $('#btn-update').classList.remove('busy');
+}
+
+$('#update-auto').addEventListener('change', async (e) => {
+  await api('/api/update/auto', { method: 'POST',
+    body: JSON.stringify({ enabled: e.target.checked }) });
+  refreshUpdate();
+});
+
 /* ---------- helpers ---------- */
 function esc(s) {
   return String(s).replace(/[&<>"']/g,
@@ -446,3 +518,6 @@ setInterval(() => {
 }, 3000);
 
 refreshAll();
+refreshUpdate();
+// badge update tetap segar walau tidak sedang di tab manapun
+setInterval(refreshUpdate, 120000);

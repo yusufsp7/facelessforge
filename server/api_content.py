@@ -210,6 +210,37 @@ def api_history(limit: int = 100):
                    (min(limit, 500),))
 
 
+# ---------------------------------------------------------------- update
+
+@router.get("/update")
+def api_update_status():
+    from . import updater
+    return updater.check()
+
+
+@router.post("/update/check")
+def api_update_check():
+    from . import updater
+    return updater.check(force=True)
+
+
+@router.post("/update/apply")
+def api_update_apply():
+    from . import updater
+    return updater.apply()
+
+
+class AutoUpdateBody(BaseModel):
+    enabled: bool
+
+
+@router.post("/update/auto")
+def api_update_auto(body: AutoUpdateBody):
+    from . import updater
+    updater.set_auto(body.enabled)
+    return {"ok": True, "auto": body.enabled}
+
+
 # ---------------------------------------------------------------- settings
 
 @router.get("/settings")

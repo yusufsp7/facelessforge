@@ -24,6 +24,8 @@ app = FastAPI(title="ContentForge", version="0.1.0")
 def _startup() -> None:
     db.init_db()
     WORKER.start()
+    from . import updater
+    updater.start_auto_loop()
     # Pre-render hover previews — but NOT on GPU-less machines (software GL
     # burns the few shared cores for many minutes on boot); there they render
     # lazily on first hover instead.

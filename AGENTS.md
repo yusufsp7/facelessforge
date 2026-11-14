@@ -151,6 +151,19 @@ Do NOT leave multiple `run.py` instances running — ports collide silently
   new style" (style-sheet.png + STYLE.md + working `example/`), then add a
   row to `generator.STYLES` so the UI picks it up.
 
+## Self-updater (header Update button)
+
+`server/updater.py` pulls this repo and restarts the process in place:
+`git pull --ff-only` → `pip install -r requirements.txt` → `os.execv(run.py)`.
+- Modes: manual (default) or auto (`settings.auto_update`, checkbox next to
+  the Update button; loop interval `FORGE_UPDATE_INTERVAL_MIN`, default 30m).
+  Auto-apply skips cycles while any upload job is running.
+- `data/` is gitignored — an update never touches login profiles/db/media.
+- Requires a git clone (`.git/` present); zip installs hide the button.
+- Apply is ff-only (local commits block it — expected). The API response
+  returns before the exec; the UI polls `/api/update` until `local_head`
+  changes then reloads the page.
+
 ## Target VM (supported baseline)
 
 Owner runs this on Ubuntu 24.04, ~2 shared vCPU (1.5 effective cores),

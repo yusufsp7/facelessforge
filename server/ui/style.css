@@ -8,6 +8,16 @@ body { margin: 0; font-family: system-ui, "Segoe UI", sans-serif;
   background: var(--bg); color: var(--text); font-size: 14px; }
 header { display: flex; align-items: center; gap: 24px; padding: 10px 20px;
   background: var(--panel); border-bottom: 1px solid var(--line); }
+.update-box { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+#btn-update { position: relative; }
+#btn-update.updates { color: var(--ok); border-color: var(--ok); }
+#btn-update.updates::after { content: ""; position: absolute; top: -3px;
+  right: -3px; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--ok); animation: pulse 1.6s infinite; }
+#btn-update.busy { color: var(--warn); border-color: var(--warn); }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+#update-auto-label { flex-direction: row; align-items: center; gap: 5px;
+  cursor: pointer; font-size: 12px; }
 .brand { font-weight: 700; font-size: 16px; }
 nav { display: flex; gap: 6px; }
 .tab { background: none; border: 1px solid transparent; color: var(--muted);

@@ -10,12 +10,18 @@
 <header>
   <div class="brand">🎬 FacelessForge</div>
   <nav>
-    <button data-tab="akun" class="tab active">Akun</button>
-    <button data-tab="generator" class="tab">Generator</button>
+    <button data-tab="akun" class="tab">Akun</button>
+    <button data-tab="generator" class="tab active">Generator</button>
     <button data-tab="konten" class="tab">Konten</button>
     <button data-tab="jadwal" class="tab">Jadwal</button>
     <button data-tab="riwayat" class="tab">Riwayat</button>
   </nav>
+  <div class="update-box">
+    <label class="check hint" id="update-auto-label"
+      title="Centang: otomatis pasang update dari GitHub saat tersedia (cek tiap 30 menit)">
+      <input type="checkbox" id="update-auto"> auto</label>
+    <button id="btn-update" class="ghost" title="Cek & pasang update dari GitHub">⬆ Update</button>
+  </div>
 </header>
 
 <main>
