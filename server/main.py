@@ -63,6 +63,14 @@ async def token_guard(request: Request, call_next):
     return await call_next(request)
 
 
+@app.exception_handler(AccountError)
+async def account_error_handler(request: Request,
+                                 exc: AccountError):
+    """R6: pesan akun yang bisa dibaca (impor cookies, verify, connect)
+    sampai ke UI/agen sebagai 4xx — bukan 500 mentah."""
+    return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
 @app.get("/api/health")
 def api_health():
     from . import updater

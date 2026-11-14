@@ -228,12 +228,17 @@ def _ffmpeg_cmd(profile: dict, dest_url: str) -> list[str]:
 
 
 def _dest_url(profile: dict, tunnel_port: int | None) -> str:
+    """URL publish FINAL — SELALU diakhiri /<stream_key> (akar bug ronde 6:
+    key hanya disimpan, tidak pernah ditempel → YouTube reset koneksi)."""
     ingest = profile.get("ingest_url")
+    key = profile.get("stream_key") or ""
     if tunnel_port:
         m = re.match(r"rtmp://([^/?]+)(/?.*)", ingest)
         path = m.group(2) if m else ""
-        return f"rtmp://127.0.0.1:{tunnel_port}{path}"
-    return ingest
+        base = f"rtmp://127.0.0.1:{tunnel_port}{path}"
+    else:
+        base = ingest
+    return f"{base.rstrip('/')}/{key}" if key else base
 
 
 def status(account_key: str) -> dict:
