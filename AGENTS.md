@@ -188,6 +188,33 @@ Do NOT leave multiple `run.py` instances running — ports collide silently
   jobs for non-approved assets are rejected. POST /api/assets registers
   external videos (upload or local path).
 
+## Live module (YouTube livestream)
+
+- `server/live.py` (encoder) + `server/live_broadcast.py` (Studio actions).
+  One live per YouTube account: `live_profiles` table (stream key stored in
+  DB but NEVER logged — API returns masked `••••last4`; masked updates keep
+  the old secret).
+- Managed ffmpeg (`-re -stream_loop -1 -i <media> … -f flv <ingest>/<key>`)
+  with auto-restart backoff (5/15/45/120s) and desired_on persistence —
+  startup resumes streams that were on (reboots are common on the VM).
+- Health is TWO-layer: ffmpeg alive AND progress bytes flowing (stall
+  timeout 120s), plus YouTube-side state read via the account's Studio
+  session. Recovery ladder: restart encoder → if broadcast ended, re-create
+  broadcast via Studio (encoder restart does NOT create one).
+- Live browser actions share PLATFORM_LOCKS with upload posters (one
+  browser per platform) and reuse the account's persistent profile.
+- Replay policy: find replay in Studio content, duration rule (default
+  keep >1h, else delete via Studio), decisions logged.
+- RTMP often blocked on the target VM: FORGE_RTMP_PROXY=http://host:port
+  wraps the RTMP connection in an in-app HTTP CONNECT tunnel (ConnectTunnel
+  listens on 127.0.0.1:0 and relays through the egress proxy).
+- Browser launches read proxy env (https_proxy etc., incl. credentials)
+  FRESH on every launch — credentials may rotate; FORGE_IGNORE_CERT_ERRORS=1
+  sets ignore_https_errors; FORGE_CA_FILE installs a private CA via
+  certutil (best-effort NSS).
+- Placeholder accounts: POST /api/accounts/add creates a row WITHOUT login
+  so cookie-import can be the first step.
+
 ## Self-updater (header Update button)
 
 `server/updater.py` pulls this repo and restarts the process in place:

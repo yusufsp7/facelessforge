@@ -12,7 +12,7 @@ import threading
 from . import paths
 
 _INIT_LOCK = threading.Lock()
-_INIT_DONE = False
+_INIT_KEYS: set[str] = set()  # per-DB-path (tests switch FORGE_DATA per module)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -82,22 +82,22 @@ def connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    global _INIT_DONE
-    if _INIT_DONE:
+    key = str(paths.db_path())
+    if key in _INIT_KEYS:
         return
     with _INIT_LOCK:
-        if _INIT_DONE:
+        if key in _INIT_KEYS:
             return
         # open a raw connection — connect() itself ensures-init, so going
         # through it here would deadlock on _INIT_LOCK
-        conn = sqlite3.connect(str(paths.db_path()), timeout=30)
+        conn = sqlite3.connect(key, timeout=30)
         try:
             conn.executescript(SCHEMA)
             conn.commit()
             _migrate(conn)
         finally:
             conn.close()
-        _INIT_DONE = True
+        _INIT_KEYS.add(key)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -113,6 +113,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.commit()
         except sqlite3.OperationalError:
             pass  # column already exists
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS live_profiles (
+        account_key TEXT PRIMARY KEY,
+        stream_key TEXT DEFAULT '',       -- RAHASIA: tidak pernah ke log/API penuh
+        ingest_url TEXT DEFAULT 'rtmp://a.rtmp.youtube.com/live2',
+        ingest_backup TEXT DEFAULT 'rtmp://b.rtmp.youtube.com/live2?backup=1',
+        media_path TEXT DEFAULT '',
+        loop INTEGER DEFAULT 1,
+        desired_on INTEGER DEFAULT 0,
+        broadcast_id TEXT DEFAULT '',
+        created_at TEXT, updated_at TEXT
+    );""")
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS generations (
         id TEXT PRIMARY KEY,

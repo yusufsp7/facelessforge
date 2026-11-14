@@ -24,6 +24,8 @@ async def lifespan(app: FastAPI):
     db.init_db()
     WORKER.start()
     generator.resume_active_generations()  # B5: lanjutkan render terputus
+    from . import live
+    live.start_watchdog()  # live desired_on → lanjutkan streaming sendiri
     from . import updater
     updater.watchdog_check()  # B6: verifikasi health pasca-update / rollback
     updater.start_auto_loop()
@@ -79,6 +81,32 @@ def api_platforms():
 class ConnectBody(BaseModel):
     platform: str
     label: str | None = None
+
+
+class AddAccountBody(BaseModel):
+    platform: str
+    label: str
+    channel_id: str = ""
+    handle: str = ""
+
+
+@app.post("/api/accounts/add")
+def api_accounts_add(body: AddAccountBody):
+    """Buat akun placeholder — impor cookies bisa jadi langkah PERTAMA
+    tanpa login manual (channel_id/handle boleh menyusul)."""
+    try:
+        platforms.get(body.platform)
+    except KeyError:
+        raise HTTPException(400, f"platform tak dikenal: {body.platform}")
+    key = MANAGER.new_key(body.platform, body.label)
+    db.upsert("accounts", {
+        "key": key, "platform": body.platform, "label": body.label,
+        "profile_key": key.replace(":", "_"), "connected": 0,
+        "channel_id": body.channel_id, "handle": body.handle,
+        "created_at": db.now_iso()})
+    db.log_event(None, "account_added", {"platform": body.platform,
+                                         "key": key})
+    return {"ok": True, "key": key}
 
 
 @app.get("/api/accounts")
@@ -151,9 +179,11 @@ def index():
     return FileResponse(str(paths.PROJECT_ROOT / "server" / "ui" / "index.html"))
 
 
-# routers added in later tasks
+# routers
 from .api_content import router as content_router  # noqa: E402
+from .api_live import router as live_router  # noqa: E402
 
 app.include_router(content_router)
+app.include_router(live_router)
 
 WORKER.bind_app(app)

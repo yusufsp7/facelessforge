@@ -15,6 +15,7 @@
     <button data-tab="konten" class="tab">Konten</button>
     <button data-tab="jadwal" class="tab">Jadwal</button>
     <button data-tab="riwayat" class="tab">Riwayat</button>
+    <button data-tab="live" class="tab">Live</button>
   </nav>
   <div class="update-box">
     <label class="check hint" id="update-auto-label"
@@ -34,6 +35,12 @@
     <p class="hint">Login pakai Chrome asli + profil per akun (ala AutoClip).
       Klik <b>Hubungkan</b> → Chrome terbuka → login manual → sesi tersimpan
       permanen, tanpa API key.</p>
+    <div class="row gap">
+      <label>Platform <select id="add-plat"></select></label>
+      <label>Label <input id="add-label" type="text" placeholder="mis. channel-2"></label>
+      <label>Channel ID (ops.) <input id="add-ch" type="text"></label>
+      <button id="btn-add-account">+ Tambah akun (tanpa login — untuk impor cookies)</button>
+    </div>
     <div id="platform-cards" class="cards"></div>
     <h3 style="margin-top:20px">Akun tersambung</h3>
     <table id="accounts-table">
@@ -137,6 +144,19 @@
       <th>Status</th><th>Progress</th><th>Aksi</th></tr></thead>
       <tbody></tbody>
     </table>
+  </section>
+
+  <!-- ================= LIVE ================= -->
+  <section id="tab-live" class="panel">
+    <div class="row">
+      <h2>Livestream YouTube</h2>
+      <button id="btn-refresh-live" class="ghost">Muat ulang</button>
+    </div>
+    <p class="hint">Encoder ffmpeg dikelola app (auto-restart, lanjut sendiri
+      setelah reboot bila sebelumnya ON). Broadcast dibuat/cek lewat sesi
+      Studio akun — encoder restart TIDAK membuat broadcast baru.</p>
+    <div id="live-cards" class="cards"></div>
+    <div id="live-log" class="hint"></div>
   </section>
 
   <!-- ================= RIWAYAT ================= -->

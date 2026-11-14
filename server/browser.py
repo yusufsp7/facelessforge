@@ -58,3 +58,48 @@ def launch_env() -> dict:
     env["NO_PROXY"] = "localhost,127.0.0.1"
     env["no_proxy"] = "localhost,127.0.0.1"
     return env
+
+
+def proxy_options() -> dict | None:
+    """Baca ulang env setiap launch (kredensial proxy bisa berotasi).
+    Mendukung https_proxy/HTTPS_PROXY/HTTP_PROXY/ALL_PROXY lengkap dengan
+    username:password di URL-nya."""
+    import urllib.parse
+    raw = None
+    for k in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY",
+              "all_proxy", "ALL_PROXY"):
+        raw = os.environ.get(k)
+        if raw:
+            break
+    if not raw:
+        return None
+    p = urllib.parse.urlparse(raw if "://" in raw else "http://" + raw)
+    proxy = {"server": f"{p.scheme or 'http'}://{p.hostname}:{p.port or 80}"}
+    if p.username:
+        proxy["username"] = urllib.parse.unquote(p.username)
+    if p.password:
+        proxy["password"] = urllib.parse.unquote(p.password)
+    return proxy
+
+
+def ignore_cert_errors() -> bool:
+    return os.environ.get("FORGE_IGNORE_CERT_ERRORS") == "1"
+
+
+def maybe_install_ca() -> str:
+    """FORGE_CA_FILE: proxy MITM dengan CA privat — Chrome memakai store
+    OS/NSS; coba pasang via certutil (best-effort, log hasil)."""
+    ca = os.environ.get("FORGE_CA_FILE")
+    if not ca or not os.path.isfile(ca):
+        return ""
+    nssdb = os.path.expanduser("~/.pki/nssdb")
+    os.makedirs(nssdb, exist_ok=True)
+    import subprocess
+    p = subprocess.run(
+        ["certutil", "-d", f"sql:{nssdb}", "-A", "-t", "CT,C,C",
+         "-n", "forge-proxy-ca", "-i", ca],
+        capture_output=True, text=True, timeout=30)
+    if p.returncode == 0:
+        return f"CA terpasang ke NSS ({nssdb})"
+    return (f"certutil gagal ({(p.stderr or p.stdout)[-120:]}): pasang CA "
+            "manual ke store OS/NSS")

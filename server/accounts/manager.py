@@ -116,6 +116,7 @@ class AccountManager:
             headless = (os.environ.get("FORGE_HEADLESS") == "1"
                         or (sys.platform.startswith("linux")
                             and not os.environ.get("DISPLAY")))
+        from .. import browser as _browser
         exe = find_chrome()
         kwargs = dict(
             user_data_dir=profile,
@@ -123,6 +124,11 @@ class AccountManager:
             args=LAUNCH_ARGS,
             viewport=None,  # use --window-size, real chrome window
         )
+        proxy = _browser.proxy_options()
+        if proxy:
+            kwargs["proxy"] = proxy
+        if _browser.ignore_cert_errors():
+            kwargs["ignore_https_errors"] = True
         if exe:
             kwargs["executable_path"] = exe
         else:

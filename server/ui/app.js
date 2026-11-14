@@ -22,7 +22,7 @@ const api = async (path, opts = {}) => {
 };
 
 let state = { platforms: [], accounts: [], styles: [], assets: [], jobs: [],
-              selectedStyle: null, genStatus: null };
+              selectedStyle: null, genStatus: null, lives: [] };
 
 /* ---------- tabs ---------- */
 $$('.tab').forEach(btn => btn.addEventListener('click', () => {
@@ -35,6 +35,13 @@ $$('.tab').forEach(btn => btn.addEventListener('click', () => {
 
 /* ---------- akun ---------- */
 async function renderPlatforms() {
+  const sel = $('#add-plat');
+  if (sel && !sel.children.length) {
+    for (const p of state.platforms) {
+      const o = document.createElement('option');
+      o.value = p.id; o.textContent = p.name; sel.appendChild(o);
+    }
+  }
   const wrap = $('#platform-cards'); wrap.innerHTML = '';
   for (const p of state.platforms) {
     const count = state.accounts.filter(a => a.platform === p.id).length;
@@ -509,6 +516,102 @@ $('#update-auto').addEventListener('change', async (e) => {
   refreshUpdate();
 });
 
+/* ---------- tambah akun placeholder ---------- */
+$('#btn-add-account').addEventListener('click', async () => {
+  const platform = $('#add-plat').value;
+  const label = $('#add-label').value.trim();
+  if (!label) { alert('isi label akun dulu'); return; }
+  const r = await api('/api/accounts/add', { method: 'POST',
+    body: JSON.stringify({ platform, label,
+      channel_id: $('#add-ch').value.trim() }) });
+  alert(`akun ${r.key} dibuat — impor cookies lewat tombol akun, atau Hubungkan untuk login manual`);
+  refreshAll();
+});
+
+/* ---------- live ---------- */
+async function renderLive() {
+  const wrap = $('#live-cards'); wrap.innerHTML = '';
+  const ytAccounts = state.accounts.filter(a => a.platform === 'youtube'
+    && a.connected);
+  if (!ytAccounts.length) {
+    wrap.innerHTML = '<div class="hint">Belum ada akun YouTube terhubung.</div>';
+    return;
+  }
+  for (const a of ytAccounts) {
+    const p = state.lives.find(x => x.account_key === a.key) || {};
+    const st = p.status || {};
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="title">${esc(a.label || a.key)} <span class="badge ${
+        st.data_flowing ? 'ok' : st.encoder_alive ? 'warn' : 'no'
+      }">${st.data_flowing ? 'MENGALIR' : st.encoder_alive ? 'encoder hidup, data belum mengalir'
+        : 'mati'}</span></div>
+      <label>Stream key (rahasia)
+        <input type="password" data-live-sk="${a.key}"
+          placeholder="${p.stream_key_masked || 'belum diset'}"></label>
+      <label>Ingest
+        <select data-live-ingest="${a.key}">
+          <option value="rtmp://a.rtmp.youtube.com/live2">a.rtmp (utama)</option>
+          <option value="rtmp://b.rtmp.youtube.com/live2?backup=1">b.rtmp (cadangan)</option>
+        </select></label>
+      <label>File media sumber <input type="text" data-live-media="${a.key}"
+        value="${esc(p.media_path || '')}" placeholder="/path/pluto.mp4"></label>
+      <label class="check"><input type="checkbox" data-live-loop="${a.key}"
+        ${p.loop ? 'checked' : ''}> loop media</label>
+      <label class="check"><input type="checkbox" data-live-auto="${a.key}"
+        ${p.desired_on ? 'checked' : ''}> auto (lanjut sendiri setelah reboot)</label>
+      <div class="sub">broadcast: ${esc(p.broadcast_id || '—')} ·
+        restart: ${st.restarts || 0} · bytes: ${st.bytes || 0}</div>
+      <div class="row">
+        <button class="primary" data-live-save="${a.key}">Simpan profil</button>
+        <button data-live-start="${a.key}">▶ Start</button>
+        <button class="danger" data-live-stop="${a.key}">■ Stop</button>
+        <button class="ghost" data-live-bc="${a.key}">Buat broadcast (Studio)</button>
+        <button class="ghost" data-live-log="${a.key}">Log</button>
+      </div>`;
+    wrap.appendChild(card);
+  }
+  wrap.querySelectorAll('[data-live-save]').forEach(b => b.addEventListener(
+    'click', async () => {
+      const key = b.dataset.liveSave;
+      await api(`/api/live/${encodeURIComponent(key)}`,
+        { method: 'PUT', body: JSON.stringify({
+          stream_key: wrap.querySelector(`[data-live-sk="${key}"]`).value,
+          ingest_url: wrap.querySelector(`[data-live-ingest="${key}"]`).value,
+          media_path: wrap.querySelector(`[data-live-media="${key}"]`).value,
+          loop: wrap.querySelector(`[data-live-loop="${key}"]`).checked,
+          desired_on: wrap.querySelector(`[data-live-auto="${key}"]`).checked,
+        }) });
+      alert('profil live tersimpan'); refreshAll();
+    }));
+  wrap.querySelectorAll('[data-live-start]').forEach(b => b.addEventListener(
+    'click', async () => {
+      const r = await api(`/api/live/${encodeURIComponent(b.dataset.liveStart)}/start`,
+        { method: 'POST' });
+      if (r.error) alert('❌ ' + r.error); else refreshAll();
+    }));
+  wrap.querySelectorAll('[data-live-stop]').forEach(b => b.addEventListener(
+    'click', async () => {
+      await api(`/api/live/${encodeURIComponent(b.dataset.liveStop)}/stop`,
+        { method: 'POST' });
+      refreshAll();
+    }));
+  wrap.querySelectorAll('[data-live-bc]').forEach(b => b.addEventListener(
+    'click', async () => {
+      b.textContent = '⏳ Studio…';
+      const r = await api(`/api/live/${encodeURIComponent(b.dataset.liveBc)}/ensure-broadcast`,
+        { method: 'POST' });
+      b.textContent = 'Buat broadcast (Studio)';
+      alert(JSON.stringify(r));
+    }));
+  wrap.querySelectorAll('[data-live-log]').forEach(b => b.addEventListener(
+    'click', async () => {
+      const r = await api(`/api/live/${encodeURIComponent(b.dataset.liveLog)}/log?n=15`);
+      $('#live-log').textContent = (r.lines || []).join('\n') || '(kosong)';
+    }));
+}
+
 /* ---------- token inline (401 non-localhost) ---------- */
 function inlineTokenPrompt() {
   return new Promise((resolve) => {
@@ -537,11 +640,13 @@ function esc(s) {
 
 async function refreshAll() {
   try {
-    const [platforms, accounts, styles, assets, jobs] = await Promise.all([
-      api('/api/platforms'), api('/api/accounts'), api('/api/styles'),
-      api('/api/assets'), api('/api/jobs')]);
+    const [platforms, accounts, styles, assets, jobs, lives] =
+      await Promise.all([
+        api('/api/platforms'), api('/api/accounts'), api('/api/styles'),
+        api('/api/assets'), api('/api/jobs'), api('/api/live')]);
     state.platforms = platforms; state.accounts = accounts;
     state.styles = styles; state.assets = assets; state.jobs = jobs;
+    state.lives = lives;
     if (document.querySelector('#tab-akun.active')) {
       if (!$('#platform-cards').children.length) renderPlatforms();
       renderAccounts();
@@ -556,6 +661,7 @@ async function refreshAll() {
     if (document.querySelector('#tab-konten.active')) renderAssets();
     if (document.querySelector('#tab-jadwal.active')) renderJobs();
     if (document.querySelector('#tab-riwayat.active')) renderHistory();
+    if (document.querySelector('#tab-live.active')) renderLive();
     $('#conn-status').textContent =
       `${accounts.filter(a => a.connected).length} akun terhubung · ` +
       `${assets.length} asset · ${jobs.filter(j => j.status === 'queued').length} job antre`;

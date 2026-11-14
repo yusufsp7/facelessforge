@@ -96,6 +96,12 @@ class PlaywrightSession:
             kwargs["executable_path"] = exe
         else:
             kwargs["channel"] = "chrome"
+        from .. import browser as _browser
+        proxy = _browser.proxy_options()  # dibaca ulang tiap launch (rotasi)
+        if proxy:
+            kwargs["proxy"] = proxy
+        if _browser.ignore_cert_errors():
+            kwargs["ignore_https_errors"] = True
         self._context = self._pw.chromium.launch_persistent_context(**kwargs)
         self.page = self._context.pages[0] if self._context.pages \
             else self._context.new_page()
