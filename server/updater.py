@@ -1,19 +1,4 @@
-"""Self-updater — pull the latest code from GitHub and restart in place.
-
-The app is deployed as a public git clone (yusufsp7/facelessforge). The
-header's Update button checks origin for new commits and applies them:
-``git pull --ff-only`` → ``pip install -r requirements.txt`` → execv restart
-of this very process. ``data/`` (login profiles, db, media) is gitignored, so
-an update never touches user state.
-
-Modes (checkbox in the UI, persisted in settings.auto_update):
-  - manual (default): the button only fetches/compares; applying needs a click
-  - auto: a background loop checks every FORGE_UPDATE_INTERVAL_MIN minutes and
-    applies updates when no upload job is running
-
-Repo-less installs (zip, no .git) report supported=False and the UI hides the
-button.
-"""
+"""Self-updater — pull the latest code from GitHub and restart in place. (patched r7)"""
 import json
 import os
 import subprocess
@@ -26,8 +11,8 @@ from . import db, paths
 INTERVAL_MIN = int(os.environ.get("FORGE_UPDATE_INTERVAL_MIN", "30"))
 PROJECT = paths.PROJECT_ROOT
 
-_lock = threading.Lock()
 _updating = False
+_watchdog_started = False
 _last_result: dict = {}
 _loop_started = False
 
@@ -72,7 +57,7 @@ def check(force: bool = False) -> dict:
         if force or time.time() - _state_last_checked() > 300 or not _last_result:
             rc, out = _git(["fetch", "origin", "--quiet"], timeout=60)
             if rc != 0:
-                _last_result = {"supported": True, "error": out[-200:],
+                _last_result = {"supported": True, "error": out[-300:],
                                 "updates": False}
             else:
                 behind, remote = _behind()
@@ -194,8 +179,10 @@ def _do_apply() -> None:
             _last_result = {"updates": False, "applied": True}
         # B6 watchdog: proses baru wajib lulus /api/health; gagal → rollback
         marker = paths.data_root() / ".update-watchdog.json"
+        new_head = _git(["rev-parse", "HEAD"])[1].strip()
         marker.write_text(json.dumps({
-            "prev_head": prev_head, "until": time.time() + 180}), encoding="utf-8")
+            "prev_head": prev_head, "new_head": new_head,
+            "until": time.time() + 180}), encoding="utf-8")
         if _under_systemd():
             # supervisor (Restart=always) yang menyalakan ulang — JANGAN spawn
             os._exit(0)
@@ -228,31 +215,59 @@ def _no_running_jobs() -> bool:
     return not running
 
 
-def watchdog_check() -> None:
-    """B6: dipanggil saat startup proses BARU — kalau ada penanda update
-    yang belum dikonfirmasi, verifikasi /api/health diri sendiri; tak lulus →
-    rollback ke HEAD sebelumnya (proses berikutnya memuat kode lama)."""
+def start_watchdog() -> None:
+    """R7: bila ada penanda update belum dikonfirmasi — probe health diri
+    sendiri di thread terpisah, retry tiap 2 dtk sampai tenggat (180 dtk);
+    rollback HANYA bila sampai tenggat tetap tidak sehat. Probe sekali-
+    tembak tanpa tunggu selalu gagal (server sendiri belum naik) → semua
+    update asli ter-rollback (bug terverifikasi di log riwayat)."""
+    global _watchdog_started
+    if _watchdog_started or not supported():
+        return
+    _watchdog_started = True
     try:
         marker = paths.data_root() / ".update-watchdog.json"
-        data = json.loads(marker.read_text(encoding="utf-8"))
-        marker.unlink()
-        if time.time() > data.get("until", 0):
+        if not marker.is_file():
             return
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    def _run():
+        marker.unlink(missing_ok=True)
+        until = data.get("until", 0)
+        if time.time() > until:
+            return
+        port = os.environ.get("FORGE_PORT", "8790")
         import urllib.request
-        try:
-            port = os.environ.get("FORGE_PORT", "8790")
-            with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}/api/health", timeout=10) as r:
-                if r.status == 200:
-                    db.log_event(None, "update_health_ok", {})
-                    return
-        except Exception:
-            pass
+        healthy = False
+        while time.time() < until:
+            time.sleep(2)
+            try:
+                with urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}/api/health",
+                        timeout=5) as r:
+                    if r.status == 200:
+                        healthy = True
+                        break
+            except Exception:
+                continue
+        if healthy:
+            db.log_event(None, "update_health_ok",
+                         {"head": data.get("new_head", "")[:7]})
+            return
         _git(["reset", "--hard", data["prev_head"]], timeout=60)
         db.log_event(None, "update_rolled_back",
                      {"to": data["prev_head"][:7]})
-    except Exception:
-        pass
+        # muat kode lama: systemd exit → supervisor restart; standalone
+        # proses masih pegang kode baru → minta restart manual.
+        if _under_systemd():
+            os._exit(0)
+        db.log_event(None, "update_rollback_manual_restart_needed",
+                     {"to": data["prev_head"][:7]})
+
+    threading.Thread(target=_run, daemon=True,
+                     name="forge-update-watchdog").start()
 
 
 def start_auto_loop() -> None:
@@ -276,4 +291,5 @@ def start_auto_loop() -> None:
             except Exception:
                 continue
 
-    threading.Thread(target=_loop, daemon=True, name="forge-autoupdate").start()
+    threading.Thread(target=_loop, daemon=True,
+                     name="forge-autoupdate").start()
