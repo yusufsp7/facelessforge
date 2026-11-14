@@ -156,11 +156,22 @@ def _do_apply() -> None:
 
 
 def _exec_restart() -> None:
-    """Replace this process with a fresh run.py (same interpreter, port)."""
+    """Restart in place: spawn a detached fresh run.py, then exit.
+
+    os.execv is deliberately avoided — on Windows it mangles arguments with
+    spaces ("Software project" split into two) and the new process dies
+    instantly. A detached child + os._exit works on Windows and Linux.
+    """
     time.sleep(1.2)
-    py = sys.executable
-    run_py = str(PROJECT / "run.py")
-    os.execv(py, [py, run_py])
+    flags = 0
+    if os.name == "nt":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    log = open(paths.data_root() / "forge-restart.log", "w",
+               encoding="utf-8")
+    subprocess.Popen([sys.executable, str(PROJECT / "run.py")],
+                     cwd=str(PROJECT), stdout=log, stderr=log,
+                     creationflags=flags, close_fds=True)
+    os._exit(0)
 
 
 def _no_running_jobs() -> bool:
