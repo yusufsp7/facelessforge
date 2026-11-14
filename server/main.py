@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
     from . import live
     live.start_watchdog()  # live desired_on → lanjutkan streaming sendiri
     from . import updater
-    updater.watchdog_check()  # B6: verifikasi health pasca-update / rollback
+    updater.start_watchdog()  # ronde-7: probe health berulang (2s), rollback hanya di tenggat
     updater.start_auto_loop()
     yield
     WORKER.stop()
