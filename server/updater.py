@@ -12,6 +12,7 @@ INTERVAL_MIN = int(os.environ.get("FORGE_UPDATE_INTERVAL_MIN", "30"))
 PROJECT = paths.PROJECT_ROOT
 
 _updating = False
+_lock = threading.Lock()
 _watchdog_started = False
 _last_result: dict = {}
 _loop_started = False
@@ -104,6 +105,72 @@ def _under_systemd() -> bool:
     return bool(os.environ.get("INVOCATION_ID"))
 
 
+def _data_paths_in_diff(prev_head: str, new_head: str) -> list[str]:
+    """R8: tolak update bila commit masuk menyentuh data/ (database,
+    profil login, media) — git pull tidak boleh menimpa state pengguna."""
+    rc, out = _git(["diff", "--name-only", f"{prev_head}..{new_head}",
+                    "--", "data/"], timeout=60)
+    if rc != 0:
+        return []
+    return [l for l in out.splitlines() if l.strip()]
+
+
+def _backup_data(tag: str) -> str:
+    """Snapshot forge.db (sqlite backup API — aman selama WAL aktif) +
+    .api-token sebelum update. Balikin path folder backup."""
+    import sqlite3
+    bdir = paths.data_root() / "backups" / tag
+    bdir.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(str(paths.db_path()))
+    dst = sqlite3.connect(str(bdir / "forge.db"))
+    src.backup(dst)
+    dst.close()
+    src.close()
+    tok = paths.data_root() / ".api-token"
+    if tok.is_file():
+        (bdir / ".api-token").write_text(tok.read_text(encoding="utf-8"),
+                                         encoding="utf-8")
+    return str(bdir)
+
+
+def _accounts_count(db_path) -> int:
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=10)
+        n = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+        conn.close()
+        return n
+    except Exception:
+        return -1
+
+
+def _restore_accounts_from_backup(backup_dir: str) -> int:
+    """Integritas pasca-update: kalau jumlah akun berkurang, kembalikan
+    baris accounts/live_profiles/settings dari backup (INSERT OR IGNORE —
+    tidak menimpa data yang lebih baru)."""
+    import sqlite3
+    src = sqlite3.connect(os.path.join(backup_dir, "forge.db"))
+    dst = sqlite3.connect(str(paths.db_path()), timeout=30)
+    n = 0
+    for table in ("accounts", "live_profiles", "settings"):
+        try:
+            rows = src.execute(f"SELECT * FROM {table}").fetchall()
+            cols = [d[1] for d in src.execute(f"PRAGMA table_info({table})")]
+            pk = cols[0]
+            marks = ",".join("?" * len(cols))
+            sql = (f"INSERT INTO {table} ({','.join(cols)}) VALUES ({marks}) "
+                   f"ON CONFLICT({pk}) DO NOTHING")
+            for row in rows:
+                cur = dst.execute(sql, row)
+                n += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        except sqlite3.Error:
+            continue
+    dst.commit()
+    dst.close()
+    src.close()
+    return n
+
+
 def _no_active_work() -> bool:
     """Auto-apply aman hanya bila tak ada job running DAN tak ada generasi
     non-terminal (restart membunuh render — gen di-resume, tapi tetap
@@ -173,15 +240,33 @@ def _do_apply() -> None:
                                 "updates": False}
                 _updating = False
             return
+        # R8: guard — commit masuk tak boleh menyentuh data/
+        new_head = _git(["rev-parse", "HEAD"])[1].strip()
+        touching = _data_paths_in_diff(prev_head, new_head)
+        if touching:
+            _git(["reset", "--hard", prev_head], timeout=60)
+            db.log_event(None, "update_aborted_data",
+                         {"files": touching[:10]})
+            with _lock:
+                _last_result = {
+                    "error": "commit menyentuh data/ — update dibatalkan",
+                    "updates": False}
+                _updating = False
+            return
+        # R8: backup database sebelum restart (akun/live/settings)
+        backup_dir = _backup_data(prev_head[:7])
+        accounts_before = _accounts_count(paths.db_path())
         db.log_event(None, "updated", {"branch": branch,
-                                       "from": prev_head[:7]})
+                                       "from": prev_head[:7],
+                                       "backup": backup_dir,
+                                       "accounts_before": accounts_before})
         with _lock:
             _last_result = {"updates": False, "applied": True}
         # B6 watchdog: proses baru wajib lulus /api/health; gagal → rollback
         marker = paths.data_root() / ".update-watchdog.json"
-        new_head = _git(["rev-parse", "HEAD"])[1].strip()
         marker.write_text(json.dumps({
             "prev_head": prev_head, "new_head": new_head,
+            "backup_dir": backup_dir, "accounts_before": accounts_before,
             "until": time.time() + 180}), encoding="utf-8")
         if _under_systemd():
             # supervisor (Restart=always) yang menyalakan ulang — JANGAN spawn
@@ -255,6 +340,16 @@ def start_watchdog() -> None:
         if healthy:
             db.log_event(None, "update_health_ok",
                          {"head": data.get("new_head", "")[:7]})
+            # R8 integritas data: akun tidak boleh hilang setelah update
+            before = int(data.get("accounts_before") or 0)
+            backup_dir = data.get("backup_dir") or ""
+            now = _accounts_count(paths.db_path())
+            if before > 0 and now < before and backup_dir and \
+                    os.path.isdir(backup_dir):
+                restored = _restore_accounts_from_backup(backup_dir)
+                db.log_event(None, "accounts_restored_after_update",
+                             {"before": before, "after": now,
+                              "restored": restored})
             return
         _git(["reset", "--hard", data["prev_head"]], timeout=60)
         db.log_event(None, "update_rolled_back",
