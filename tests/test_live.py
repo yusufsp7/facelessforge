@@ -64,12 +64,15 @@ class TestTunnel(unittest.TestCase):
 
 class TestBrowserProxy(unittest.TestCase):
     def test_proxy_parse_with_credentials(self):
+        """R6: browser proxy = relay lokal 127.0.0.1 (kredensial dibaca
+        relay per koneksi dari env, bukan diteruskan ke Playwright)."""
         with mock.patch.dict(os.environ, {"https_proxy":
                                           "http://u:p%40s@10.0.0.1:3128"}):
             p = proxy_options()
-            self.assertEqual(p["server"], "http://10.0.0.1:3128")
-            self.assertEqual(p["username"], "u")
-            self.assertEqual(p["password"], "p@s")
+            self.assertEqual(p["server"], "http://127.0.0.1:"
+                             + str(proxy_options()["server"]).split(":")[-1])
+            self.assertNotIn("10.0.0.1", p["server"])
+            self.assertNotIn("username", p)  # tanpa auth di browser side
 
     def test_no_proxy_no_options(self):
         env = {k: "" for k in ("https_proxy", "HTTPS_PROXY", "http_proxy",

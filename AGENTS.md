@@ -208,12 +208,21 @@ Do NOT leave multiple `run.py` instances running — ports collide silently
 - RTMP often blocked on the target VM: FORGE_RTMP_PROXY=http://host:port
   wraps the RTMP connection in an in-app HTTP CONNECT tunnel (ConnectTunnel
   listens on 127.0.0.1:0 and relays through the egress proxy).
-- Browser launches read proxy env (https_proxy etc., incl. credentials)
-  FRESH on every launch — credentials may rotate; FORGE_IGNORE_CERT_ERRORS=1
+- Browser launches (manager + posters) go through the LOCAL CHAIN RELAY
+  (`_ChainRelay` in browser.py): Chromium talks to 127.0.0.1:<relay-port>
+  without auth; the relay re-reads the proxy env FRESH per connection and
+  tunnels via raw CONNECT (Chromium negotiating directly with some egress
+  proxies fails ERR_TUNNEL_CONNECTION_FAILED even when curl works — proven
+  on the VM). FORGE_PROXY_DIRECT=1 opts out. FORGE_IGNORE_CERT_ERRORS=1
   sets ignore_https_errors; FORGE_CA_FILE installs a private CA via
   certutil (best-effort NSS).
+- The same CONNECT pattern tunnels RTMP for live: FORGE_RTMP_PROXY +
+  live.ConnectTunnel (per-account errors appended to that account's
+  encoder.log).
 - Placeholder accounts: POST /api/accounts/add creates a row WITHOUT login
-  so cookie-import can be the first step.
+  so cookie-import can be the first step (import/verify failures return
+  readable HTTP 400 — Playwright errors are wrapped in AccountError).
+- live_profiles partial PUT: None fields mean "not sent" (old values kept).
 
 ## Self-updater (header Update button)
 

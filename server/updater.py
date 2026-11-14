@@ -141,6 +141,9 @@ def _post_pull_checks() -> tuple[bool, str]:
         return p.returncode == 0, (p.stdout or "")[-300:]
     except Exception as e:
         return False, repr(e)[:300]
+
+
+def apply() -> dict:
     """Pull, install deps, restart this process. Runs in a thread so the HTTP
     response can be sent first; the UI then polls /api/update until the new
     process reports a new local_head."""

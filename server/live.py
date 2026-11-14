@@ -11,8 +11,9 @@ tunneling (FORGE_RTMP_PROXY) for egress networks that block RTMP.
 import json
 import os
 import re
-import shutil
 import socket
+import shutil
+
 import subprocess
 import threading
 import time
@@ -71,9 +72,11 @@ def save_profile(account_key: str, fields: dict) -> dict:
         or "rtmp://b.rtmp.youtube.com/live2?backup=1",
         "media_path": fields.get("media_path")
         or (old or {}).get("media_path") or "",
-        "loop": int(fields.get("loop", (old or {}).get("loop", 1))),
-        "desired_on": int(fields.get("desired_on",
-                                     (old or {}).get("desired_on", 0))),
+        "loop": int(fields.get("loop") if fields.get("loop") is not None
+                    else (old or {}).get("loop", 1)),
+        "desired_on": int(fields.get("desired_on")
+                          if fields.get("desired_on") is not None
+                          else (old or {}).get("desired_on", 0)),
         "broadcast_id": fields.get("broadcast_id",
                                    (old or {}).get("broadcast_id", "")),
         "created_at": (old or {}).get("created_at") or db.now_iso(),
@@ -100,9 +103,12 @@ def _rtmp_proxy_target(ingest_url: str) -> tuple[str, int]:
 
 class ConnectTunnel:
     """Lokal listen port → HTTP CONNECT via proxy egress → RTMP host:port.
-    Menyerap pola forwarder eksternal ke dalam app."""
+    Menyerap pola forwarder eksternal ke dalam app. Error ditulis ke log
+    encoder akun agar terdiagnosa dari luar (BUG 5)."""
 
-    def __init__(self, proxy_url: str, host: str, port: int):
+    def __init__(self, proxy_url: str, host: str, port: int,
+                 account_key: str = ""):
+        self.account_key = account_key
         self.proxy_url = proxy_url
         self.host = host
         self.port = port
@@ -162,12 +168,26 @@ class ConnectTunnel:
                 raise ConnectionError(f"CONNECT ditolak: {resp[:80]}")
             self._relay(client, up)
         except Exception as e:
-            log_event("tunnel", "tunnel_error", {"error": repr(e)[:150]})
-        finally:
+            msg = (f"[tunnel] CONNECT {self.host}:{self.port} via "
+                   f"{self.proxy_url} gagal: {e!r:.200}")
+            self._append_log(msg)
+            log_event("tunnel", "tunnel_error",
+                      {"account": self.account_key,
+                       "error": repr(e)[:150]})
             try:
                 client.close()
             except Exception:
                 pass
+
+    def _append_log(self, msg: str) -> None:
+        d = LIVE_DIR / self.account_key if self.account_key else LIVE_DIR
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            with open(d / "encoder.log", "ab") as f:
+                stamp = time.strftime("[%Y-%m-%d %H:%M:%S] ")
+                f.write((stamp + msg + "\n").encode())
+        except Exception:
+            pass
 
     @staticmethod
     def _relay(a: socket.socket, b: socket.socket) -> None:
@@ -249,7 +269,8 @@ def start(account_key: str) -> dict:
         dest = _dest_url(profile, None)
         if os.environ.get("FORGE_RTMP_PROXY"):
             host, port = _rtmp_proxy_target(profile["ingest_url"])
-            tunnel = ConnectTunnel(os.environ["FORGE_RTMP_PROXY"], host, port)
+            tunnel = ConnectTunnel(os.environ["FORGE_RTMP_PROXY"], host,
+                                   port, account_key)
             dest = _dest_url(profile, tunnel.start())
             enc_tunnels[account_key] = tunnel
         log_dir = LIVE_DIR / account_key
