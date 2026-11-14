@@ -66,9 +66,23 @@ class Worker:
 
     # -- main loop -------------------------------------------------------
 
+    def recover_stale(self) -> int:
+        """Requeue jobs stuck 'running' after a crash/reboot (B11)."""
+        stale = db.rows("SELECT id FROM jobs WHERE status = 'running'")
+        for j in stale:
+            db.update("jobs", j["id"], {
+                "status": "queued", "schedule_at": db.now_iso(),
+                "error": "dipulihkan setelah restart",
+                "updated_at": db.now_iso()}, key_col="id")
+        if stale:
+            db.log_event(None, "jobs_recovered",
+                         {"count": len(stale), "ids": [j["id"] for j in stale]})
+        return len(stale)
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
+        self.recover_stale()
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="forge-worker",
                                         daemon=True)
@@ -146,6 +160,8 @@ class Worker:
                     tags=meta.get("tags", []),
                     schedule_at=native_when,
                     visibility=job["visibility"],
+                    made_for_kids=bool(meta.get("made_for_kids", False)),
+                    channel_id=(acct.get("channel_id") or ""),
                     progress_cb=lambda pct: self._progress(job["id"], pct),
                 )
                 db.update("jobs", job["id"], {

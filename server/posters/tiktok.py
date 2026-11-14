@@ -286,7 +286,8 @@ class TikTokPoster(BasePoster):
         return True
 
     def upload(self, *, asset_path, asset_kind, title, description, tags,
-               schedule_at, visibility, progress_cb) -> UploadResult:
+               schedule_at, visibility, progress_cb,
+               made_for_kids=False, channel_id="") -> UploadResult:
         self._preflight(asset_path)
         if asset_kind != "video":
             raise UploadError("preflight",

@@ -24,7 +24,8 @@ class InstagramPoster(BasePoster):
         return LOGIN_CHECK
 
     def upload(self, *, asset_path, asset_kind, title, description, tags,
-               schedule_at, visibility, progress_cb) -> UploadResult:
+               schedule_at, visibility, progress_cb,
+               made_for_kids=False, channel_id="") -> UploadResult:
         self._preflight(asset_path)
         if schedule_at:
             raise UploadError("schedule",

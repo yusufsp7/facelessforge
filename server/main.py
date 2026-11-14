@@ -4,11 +4,13 @@ Single process: static UI + JSON API. Blocking work (browser login, upload,
 generation) always runs on plain threads — FastAPI endpoints just kick them
 off and the UI polls status, so the event loop never blocks on Playwright.
 """
+import secrets
 import threading
 import uuid
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -17,7 +19,50 @@ from .accounts import platforms
 from .accounts.manager import AccountError, MANAGER
 from .worker import WORKER
 
-app = FastAPI(title="ContentForge", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init_db()
+    WORKER.start()
+    from . import updater
+    updater.start_auto_loop()
+    yield
+    WORKER.stop()
+
+
+app = FastAPI(title="FacelessForge", version="0.3.0", lifespan=lifespan)
+
+TOKEN_FILE = paths.data_root() / ".api-token"
+
+
+def _api_token() -> str:
+    """Token auth for /api — required for non-localhost clients (E26)."""
+    if TOKEN_FILE.is_file():
+        return TOKEN_FILE.read_text(encoding="utf-8").strip()
+    tok = secrets.token_urlsafe(24)
+    TOKEN_FILE.write_text(tok, encoding="utf-8")
+    print(f"[FacelessForge] API TOKEN (header X-Forge-Token): {tok}",
+          flush=True)
+    return tok
+
+
+@app.middleware("http")
+async def token_guard(request: Request, call_next):
+    path = request.url.path
+    client = request.client.host if request.client else ""
+    localhost = client in ("127.0.0.1", "::1", "localhost")
+    if path.startswith("/api/") and path != "/api/health" and not localhost:
+        tok = _api_token()
+        if request.headers.get("X-Forge-Token", "") != tok:
+            return JSONResponse(
+                {"detail": "token tidak valid — header X-Forge-Token wajib"},
+                status_code=401)
+    return await call_next(request)
+
+
+@app.get("/api/health")
+def api_health():
+    from . import updater
+    return {"ok": True, "head": updater.check().get("local_head", "")}
 
 
 @app.on_event("startup")
@@ -32,10 +77,6 @@ def _startup() -> None:
     if not generator.software_gl():
         for sid in generator.STYLES:
             generator.ensure_preview(sid)
-    else:
-        import logging
-        logging.getLogger("forge").info(
-            "software-GL machine: style previews render lazily on hover")
 
 
 @app.on_event("shutdown")

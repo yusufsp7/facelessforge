@@ -13,6 +13,7 @@ and opens ``sync_playwright()`` fresh, so no object ever crosses threads.
 """
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -50,28 +51,17 @@ if sys.platform.startswith("linux"):
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         LAUNCH_ARGS += ["--no-sandbox"]
 
-CHROME_CANDIDATES = [
-    r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
-    r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
-    r"%LocalAppData%\Google\Chrome\Application\chrome.exe",
-]
+
 
 LOGIN_TIMEOUT_S = 600
 LOGIN_POLL_S = 3.0
 
 
 def find_chrome() -> str | None:
-    for cand in CHROME_CANDIDATES:
-        p = os.path.expandvars(cand)
-        if os.path.isfile(p):
-            return p
-    if sys.platform.startswith("linux"):
-        for cand in ("/usr/bin/google-chrome-stable", "/usr/bin/google-chrome",
-                     "/usr/bin/chromium", "/usr/bin/chromium-browser",
-                     "/snap/bin/chromium"):
-            if os.path.isfile(cand):
-                return cand
-    return shutil.which("chrome") or shutil.which("google-chrome")
+    """Single source of truth lives in server.browser (env override →
+    puppeteer Chrome-for-Testing cache → standard installs)."""
+    from .. import browser as _browser
+    return _browser.find_chrome()
 
 
 class AccountError(Exception):
@@ -211,7 +201,7 @@ class AccountManager:
 
                 self._set_connecting(key, status="saving",
                                      detail="Login terdeteksi — menyimpan…")
-                account_name = ""
+                account_name, channel_id, handle = "", "", ""
                 try:
                     page.goto(spec.probe_url, wait_until="domcontentloaded",
                               timeout=60_000)
@@ -219,6 +209,19 @@ class AccountManager:
                     account_name = page.evaluate(spec.account_name_js) or ""
                 except Exception:
                     pass
+                if platform == "youtube":
+                    # capture channel id/handle from Studio URL (never via
+                    # avatar switching — that dialog is forbidden)
+                    try:
+                        page.goto("https://studio.youtube.com",
+                                  wait_until="domcontentloaded", timeout=60_000)
+                        time.sleep(3)
+                        m = re.search(r"studio\.youtube\.com/channel/"
+                                      r"(UC[A-Za-z0-9_-]+)", page.url)
+                        channel_id = m.group(1) if m else ""
+                        handle = account_name
+                    except Exception:
+                        pass
 
                 db.upsert("accounts", {
                     "key": key,
@@ -227,6 +230,8 @@ class AccountManager:
                     "profile_key": key.replace(":", "_"),
                     "account_name": account_name,
                     "connected": 1,
+                    "channel_id": channel_id,
+                    "handle": handle,
                     "created_at": db.now_iso(),
                 })
                 db.log_event(None, "account_connected",
@@ -343,6 +348,8 @@ class AccountManager:
                 "label": r["label"],
                 "account_name": r["account_name"],
                 "connected": bool(r["connected"]),
+                "channel_id": r.get("channel_id") or "",
+                "handle": r.get("handle") or "",
             })
         return out
 

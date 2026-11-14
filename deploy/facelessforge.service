@@ -1,0 +1,20 @@
+[Unit]
+Description=FacelessForge
+After=network-online.target
+
+[Service]
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/facelessforge
+Environment=FORGE_HEADLESS=1
+Environment=FORGE_MAX_CONCURRENCY=1
+Environment=FORGE_PORT=8790
+Environment=NO_PROXY=localhost,127.0.0.1
+# Chrome for Testing (VM tanpa chrome standar):
+Environment=CHROME=/home/YOUR_USER/.cache/puppeteer/chrome/linux-XXXX/chrome-linux64/chrome
+ExecStart=/home/YOUR_USER/facelessforge/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+MemoryMax=6G
+
+[Install]
+WantedBy=multi-user.target

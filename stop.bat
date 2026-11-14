@@ -1,5 +1,4 @@
 @echo off
-rem Matikan ContentForge (python run.py) + yue-server yang di-spawn engine.
 
 setlocal
 set PORT=%FORGE_PORT%

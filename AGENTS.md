@@ -61,6 +61,8 @@ server/
     tiktok.py / youtube.py / facebook.py / instagram.py / threads.py
   engines/
   generator.py       THE generation system: faceless-shorts skill runner
+                     (chunked render + checkpoint/resume, generation queue,
+                     two-phase prepare/continue, QC gate, projects cleanup)
                      (style catalog + previews, readiness status, setup.sh
                      runner, generate pipeline thread, writer hook)
   worker.py          Worker thread: claims queued jobs due now, ONE browser per
@@ -68,7 +70,8 @@ server/
                      1 auto-retry, failure screenshots to data/media/diag/
   ui/                index.html + app.js + style.css — vanilla JS, no build step
 tools/               diagnostics (login-check JS smoke test, login screenshot)
-tests/               pytest suite (25 tests)
+tests/               pytest suite (run: .venv/Scripts/pytest on Windows,
+                     .venv/bin/pytest on Linux) (25 tests)
 run.py               uvicorn entry (FORGE_PORT, default 8790)
 start.bat / stop.bat Windows launch/stop (stop kills the FORGE_PORT listener;
                      never touches Chrome)
@@ -139,7 +142,9 @@ Do NOT leave multiple `run.py` instances running — ports collide silently
   the worker's own queue handles timed posting instead.
 - The in-app browser used by the owner may not show `prompt()` reliably —
   UI avoids `prompt()` entirely (inline inputs only).
-- No git repo yet; no CI. Run pytest before handing off changes.
+- Repo: github.com/yusufsp7/facelessforge (public, intentionally
+  README-less; docs live here + owner-local README.md). Run pytest
+  before handing off changes. Linux run commands: `.venv/bin/python run.py`.
 
 ## How to extend
 
@@ -150,6 +155,30 @@ Do NOT leave multiple `run.py` instances running — ports collide silently
 - **New faceless-shorts style**: follow the skill's own SKILL.md §"Adding a
   new style" (style-sheet.png + STYLE.md + working `example/`), then add a
   row to `generator.STYLES` so the UI picks it up.
+
+## Auth & ops (E26/E29)
+
+- All `/api/*` requires `X-Forge-Token` from non-localhost clients; the
+  token is generated once to `data/.api-token` and printed at first boot.
+  Localhost is always exempt. Default bind is 127.0.0.1 (`FORGE_BIND=0.0.0.0`
+  to expose). `GET /api/health` is the unauthenticated supervision probe.
+- Generated projects (`data/videos/forge-*`) are deleted after a successful
+  asset copy unless `FORGE_KEEP_PROJECTS=1`. Preview MP4s are cached forever
+  (small); generation rows live in the `generations` table.
+- Linux launchers: `start.sh` / `stop.sh` (pidfile `data/.server.pid`) +
+  `deploy/facelessforge.service` (systemd example, MemoryMax=6G).
+- Render is CHUNKED (6s chunks, per-chunk ffprobe + checkpoint, concat -c
+  copy): one long capture invocation >14 min is proven to livelock
+  SwiftShader on the GPU-less VM — never revert to single-invocation renders.
+- Two-phase for external writers (Muse): POST /api/generate
+  {"mode":"prepare"} → project scaffolded, status 'prepared' → writer fills
+  script.json + src/shots.js in project_dir → POST
+  /api/generations/{id}/continue → voice→render. Hook protocol schema is
+  documented in generator.WRITER_PROTOCOL.
+- QC gate: rendered assets start `qc_status='pending'` with an ffprobe
+  report + contact sheet path in meta; POST /api/assets/{id}/qc approves;
+  jobs for non-approved assets are rejected. POST /api/assets registers
+  external videos (upload or local path).
 
 ## Self-updater (header Update button)
 
@@ -189,4 +218,7 @@ MUST keep working there — meaning:
   ToS — that risk is theirs. Don't add credential-harvesting, mass-follower
   or evasion features beyond the stealth needed to keep sessions working.
 - UI strings are Indonesian; code identifiers and comments are English.
-- When you change architecture, update this file AND `README.md`.
+- When you change architecture, update this file AND `README.md` — note
+  README.md is owner-local (gitignored, deliberately not public) but it IS
+  the canonical run/deploy reference (Linux/VM commands, CHROME, NO_PROXY,
+  TZ/FORGE_DATA). Keep both in sync.

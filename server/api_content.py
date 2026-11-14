@@ -3,9 +3,10 @@ import json
 import os
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -75,9 +76,16 @@ def api_generation(gen_id: str):
 class GenerateBody(BaseModel):
     style: str
     topic: str
+    mode: str = "auto"            # auto | prepare
     voice: str = "am_michael"
     length_s: int = 35
     end_line: str = ""
+    title: str = ""               # judul final (bukan topik)
+    description: str = ""
+    tags: list[str] = []
+    account_key: str = ""         # channel tujuan
+    topic_code: str = ""
+    planned_time: str = ""        # rencana jam tayang WIB (informatif)
 
 
 @router.post("/generate")
@@ -108,7 +116,23 @@ def api_media(asset_id: str):
 
 
 @router.delete("/assets/{asset_id}")
-def api_asset_delete(asset_id: str):
+def api_asset_delete(asset_id: str, force: bool = False):
+    a = db.one("SELECT * FROM assets WHERE id = ?", (asset_id,))
+    if not a:
+        raise HTTPException(404, "asset tidak ada")
+    refs = db.rows("SELECT id FROM jobs WHERE asset_id = ?", (asset_id,))
+    if refs and not force:
+        raise HTTPException(400, f"masih direferensikan {len(refs)} job — "
+                                 "batal job dulu, atau pakai ?force=true")
+    if refs:
+        for j in refs:
+            db.update("jobs", j["id"], {"status": "cancelled",
+                                        "error": "asset dihapus",
+                                        "updated_at": db.now_iso()},
+                      key_col="id")
+    if a["path"] and os.path.isfile(a["path"]) and a["path"].startswith(
+            str(paths.media_dir())):
+        os.remove(a["path"])
     conn = db.connect()
     try:
         conn.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
@@ -116,6 +140,50 @@ def api_asset_delete(asset_id: str):
     finally:
         conn.close()
     return {"ok": True}
+
+
+@router.post("/assets")
+def api_asset_register(file: UploadFile | None = File(default=None),
+                       path: str | None = Form(default=None),
+                       title: str = Form(default=""),
+                       description: str = Form(default=""),
+                       tags: str = Form(default=""),
+                       qc_approved: bool = Form(default=False)):
+    """Register external video (upload atau path lokal) untuk dijadwalkan."""
+    import shutil as _sh
+    os.makedirs(str(paths.media_dir()), exist_ok=True)
+    if file is not None:
+        asset_id = uuid.uuid4().hex[:10]
+        dst = str(paths.media_dir() / f"ext-{asset_id}.mp4")
+        with open(dst, "wb") as f:
+            _sh.copyfileobj(file.file, f)
+    elif path and os.path.isfile(path):
+        asset_id = uuid.uuid4().hex[:10]
+        dst = path
+    else:
+        raise HTTPException(400, "berikan file (upload) atau path lokal valid")
+    qc = generator.qc_validate(dst, {})
+    if not qc.get("ok"):
+        raise HTTPException(400, f"video tidak lolos ffprobe: {qc}")
+    db.insert("assets", {
+        "id": asset_id, "kind": "video",
+        "title": title or os.path.basename(dst), "path": dst,
+        "engine": "external",
+        "meta_json": json.dumps({"description": description,
+                                 "tags": [t.strip() for t in tags.split(",")
+                                          if t.strip()]}, ensure_ascii=False),
+        "qc_status": "approved" if qc_approved else "pending",
+        "created_at": db.now_iso(),
+    })
+    return {"ok": True, "id": asset_id, "qc": qc}
+
+
+@router.post("/assets/{asset_id}/qc")
+def api_asset_qc(asset_id: str, approved: bool):
+    if not db.one("SELECT id FROM assets WHERE id = ?", (asset_id,)):
+        raise HTTPException(404, "asset tidak ada")
+    generator.set_qc(asset_id, "approved" if approved else "rejected")
+    return {"ok": True, "qc_status": "approved" if approved else "rejected"}
 
 
 # ---------------------------------------------------------------- jobs
@@ -130,10 +198,19 @@ class JobBody(BaseModel):
 
 
 @router.post("/jobs")
+def _schedule_tz() -> ZoneInfo:
+    row = db.one("SELECT v FROM settings WHERE k = 'schedule_tz'")
+    return ZoneInfo(row["v"] if row else "Asia/Jakarta")
+
+
 def api_create_jobs(body: JobBody):
     asset = db.one("SELECT * FROM assets WHERE id = ?", (body.asset_id,))
     if not asset:
         raise HTTPException(404, "asset tidak ada")
+    if asset["qc_status"] != "approved":
+        raise HTTPException(400, f"asset belum lolos QC "
+                                 f"(status: {asset['qc_status']}) — "
+                                 "approve di tab Konten dulu")
     if body.mode == "at":
         if not body.schedule_at:
             raise HTTPException(400, "schedule_at wajib untuk mode 'at'")
@@ -142,11 +219,16 @@ def api_create_jobs(body: JobBody):
         except ValueError:
             raise HTTPException(400, "schedule_at bukan ISO valid")
         if local.tzinfo is None:
-            local = local.astimezone()
-        schedule_at = local.astimezone(timezone.utc).isoformat(
+            # naive input = jam tayang di zona jadwal (default WIB), bukan jam server
+            local = local.replace(tzinfo=_schedule_tz())
+        schedule_at = local.astimezone(ZoneInfo("UTC")).isoformat(
             timespec="seconds")
     else:
         schedule_at = db.now_iso()
+    meta = json.loads(asset["meta_json"] or "{}")
+    caption = {**{k: meta[k] for k in ("title", "description", "tags")
+                  if meta.get(k)}, **body.caption}
+    caption["made_for_kids"] = body.caption.get("made_for_kids", False)
     created = []
     for key in body.account_keys:
         acct = db.one("SELECT * FROM accounts WHERE key = ?", (key,))
@@ -160,22 +242,38 @@ def api_create_jobs(body: JobBody):
             "status": "queued",
             "schedule_at": schedule_at,
             "visibility": body.visibility,
-            "caption_json": json.dumps(body.caption, ensure_ascii=False),
+            "caption_json": json.dumps(caption, ensure_ascii=False),
             "created_at": db.now_iso(),
             "updated_at": db.now_iso(),
         })
         db.log_event(jid, "job_created",
-                     {"account": key, "schedule_at": schedule_at})
+                     {"account": key, "schedule_at": schedule_at,
+                      "visibility": body.visibility})
         created.append(jid)
     return {"created": created}
 
 
 @router.get("/jobs")
 def api_jobs(status: str | None = None):
+    tz = _schedule_tz()
     if status:
-        return db.rows("SELECT * FROM jobs WHERE status = ? "
+        jobs = db.rows("SELECT * FROM jobs WHERE status = ? "
                        "ORDER BY schedule_at DESC LIMIT 200", (status,))
-    return db.rows("SELECT * FROM jobs ORDER BY schedule_at DESC LIMIT 200")
+    else:
+        jobs = db.rows("SELECT * FROM jobs ORDER BY schedule_at DESC LIMIT 200")
+    accs = {a["key"]: a for a in db.rows(
+        "SELECT key, platform, channel_id, handle FROM accounts")}
+    for j in jobs:
+        try:
+            j["schedule_tz"] = (datetime.fromisoformat(j["schedule_at"])
+                                .astimezone(tz).isoformat(timespec="seconds"))
+        except Exception:
+            j["schedule_tz"] = j["schedule_at"]
+        j["schedule_tz_name"] = str(tz)
+        a = accs.get(j["account_key"]) or {}
+        j["channel_id"] = a.get("channel_id", "")
+        j["handle"] = a.get("handle", "")
+    return jobs
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -257,3 +355,15 @@ def api_settings_set(body: SettingsBody):
     for k, v in body.values.items():
         db.upsert("settings", {"k": k, "v": v}, conflict_col="k")
     return {"ok": True}
+
+
+@router.get("/preview-file")
+def api_preview_file(path: str):
+    """Serve internal QC artifacts (contact sheets) — path must live in data/."""
+    import os as _os
+    p = _os.path.abspath(path)
+    if not p.startswith(str(paths.data_root())):
+        raise HTTPException(403, "path di luar data/")
+    if not _os.path.isfile(p):
+        raise HTTPException(404, "file tidak ada")
+    return FileResponse(p)

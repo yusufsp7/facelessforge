@@ -55,6 +55,12 @@ class TestAPI(unittest.TestCase):
     def setUp(self):
         from server.main import app
         self.c = TestClient(app)
+        # middleware generates the token on first blocked request, then
+        # every request carries it (client host "testclient" ≠ localhost)
+        self.c.get("/api/styles")
+        tok = open(os.path.join(os.environ["FORGE_DATA"], ".api-token"),
+                   encoding="utf-8").read().strip()
+        self.c.headers.update({"X-Forge-Token": tok})
 
     def test_styles_endpoint(self):
         r = self.c.get("/api/styles")

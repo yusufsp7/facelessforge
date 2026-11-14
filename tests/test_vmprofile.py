@@ -30,12 +30,12 @@ class TestSoftwareGL(unittest.TestCase):
 
     def test_render_env_software_recipe(self):
         with mock.patch.dict(os.environ, {"FORGE_SOFTWARE_GL": "1"}):
-            env = generator._render_env(24, False)
+            env = generator._render_env(24)
             self.assertEqual(env["SOFTWARE_GL"], "1")
             self.assertEqual(env["QS"], "&res=0.6&aa=0&shadow=1024")
             self.assertEqual(env["FPS"], "24")
         with mock.patch.dict(os.environ, {"FORGE_SOFTWARE_GL": "0"}):
-            env = generator._render_env(30, False)
+            env = generator._render_env(30)
             self.assertNotIn("SOFTWARE_GL", env)
 
 

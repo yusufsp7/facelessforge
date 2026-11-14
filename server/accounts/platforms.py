@@ -58,7 +58,7 @@ _PLATFORMS: dict[str, PlatformSpec] = {
             " return el ? (el.getAttribute('aria-label') || '').trim() : ''; }"
         ),
         probe_url="https://www.youtube.com/",
-        schedule_supported=True,
+        schedule_supported=False,  # native schedule belum dipakai — worker upload tepat waktu
     ),
     "facebook": PlatformSpec(
         id="facebook",

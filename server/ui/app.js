@@ -2,8 +2,21 @@
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 const api = async (path, opts = {}) => {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' }, ...opts });
+  const headers = { 'Content-Type': 'application/json',
+    ...(opts.headers || {}) };
+  const tok = localStorage.getItem('forge_token');
+  if (tok) headers['X-Forge-Token'] = tok;
+  const res = await fetch(path, { ...opts, headers });
+  if (res.status === 401) {
+    const t = prompt('Server butuh token API (header X-Forge-Token):');
+    if (t) {
+      localStorage.setItem('forge_token', t.trim());
+      headers['X-Forge-Token'] = t.trim();
+      const retry = await fetch(path, { ...opts, headers });
+      if (!retry.ok) throw new Error(`${retry.status} ${await retry.text()}`);
+      return retry.status === 200 ? retry.json() : null;
+    }
+  }
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.status === 200 ? res.json() : null;
 };
@@ -282,11 +295,20 @@ async function renderAssets() {
         : a.kind === 'image' && a.path
           ? `<img src="/api/media/${a.id}" style="width:100%;border-radius:8px">`
           : `<a href="/api/media/${a.id}" target="_blank">Buka file</a>`;
+    const qc = a.qc_status || 'approved';
+    const qcBadge = `<div class="sub">QC: <span class="badge ${
+      qc === 'approved' ? 'ok' : qc === 'rejected' ? 'bad' : 'warn'
+    }">${qc}</span>
+      ${qc === 'pending' && a.engine.startsWith('faceless-shorts') && a.path
+        ? `<a class="hint" href="#" data-qcsheet="${a.id}">lihat contact sheet</a>` : ''}</div>`;
     card.innerHTML = `
       <div class="title">${esc(a.title || a.id)}</div>
       <div class="sub">${a.kind} · ${a.engine} · ${a.created_at}</div>
-      ${media}
-      <button class="primary" data-sched="${a.id}">Jadwalkan upload</button>
+      ${media}${qcBadge}
+      ${qc === 'pending'
+        ? `<button class="primary" data-qc="${a.id}" data-v="1">QC lolos ✓</button>
+           <button class="danger" data-qc="${a.id}" data-v="0">QC tolak ✗</button>`
+        : `<button class="primary" data-sched="${a.id}">Jadwalkan upload</button>`}
       <button class="danger" data-del="${a.id}">Hapus</button>`;
     wrap.appendChild(card);
   }
@@ -294,9 +316,24 @@ async function renderAssets() {
     'click', () => openSchedule(b.dataset.sched)));
   wrap.querySelectorAll('[data-del]').forEach(b => b.addEventListener(
     'click', async () => {
-      if (!confirm('Hapus asset?')) return;
-      await api(`/api/assets/${b.dataset.del}`, { method: 'DELETE' });
+      if (!confirm('Hapus asset? (job terkait akan dibatalkan)')) return;
+      await api(`/api/assets/${b.dataset.del}?force=true`, { method: 'DELETE' });
       refreshAll();
+    }));
+  wrap.querySelectorAll('[data-qc]').forEach(b => b.addEventListener(
+    'click', async () => {
+      await api(`/api/assets/${b.dataset.qc}/qc?approved=${b.dataset.v}`,
+        { method: 'POST' });
+      refreshAll();
+    }));
+  wrap.querySelectorAll('[data-qcsheet]').forEach(a => a.addEventListener(
+    'click', async (e) => {
+      e.preventDefault();
+      const assets = await api('/api/assets');
+      const a2 = assets.find(x => x.id === a.dataset.qcsheet);
+      const meta = typeof a2?.meta_json === 'string'
+        ? JSON.parse(a2.meta_json) : (a2?.meta_json || {});
+      if (meta.qc_sheet) window.open(`/api/preview-file?path=${encodeURIComponent(meta.qc_sheet)}`);
     }));
 }
 
@@ -306,6 +343,8 @@ let schedAssetId = null;
 function openSchedule(assetId) {
   schedAssetId = assetId;
   const wrap = $('#sched-accounts'); wrap.innerHTML = '<b>Akun tujuan:</b>';
+  const supportedPlats = new Set(state.platforms
+    .filter(p => p.schedule_supported).map(p => p.id));
   for (const a of state.accounts.filter(x => x.connected)) {
     const label = document.createElement('label');
     label.className = 'check';
@@ -315,6 +354,11 @@ function openSchedule(assetId) {
   }
   if (!wrap.querySelectorAll('input').length)
     wrap.innerHTML += '<div class="hint">Belum ada akun terhubung!</div>';
+  const anyNative = $$('#sched-accounts input:checked').some(i => {
+    const acc = state.accounts.find(x => x.key === i.value);
+    return acc && supportedPlats.has(acc.platform);
+  });
+  $('#sched-native-wrap').classList.toggle('hidden', !anyNative);
   $('#schedule-modal').classList.remove('hidden');
 }
 

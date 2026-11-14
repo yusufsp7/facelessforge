@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS assets (
     path TEXT,
     engine TEXT,
     meta_json TEXT DEFAULT '{}',
+    qc_status TEXT DEFAULT 'approved',  -- pending | approved | rejected
     created_at TEXT
 );
 CREATE TABLE IF NOT EXISTS jobs (
@@ -93,9 +94,36 @@ def init_db() -> None:
         try:
             conn.executescript(SCHEMA)
             conn.commit()
+            _migrate(conn)
         finally:
             conn.close()
         _INIT_DONE = True
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Lightweight additive migrations (CREATE IF NOT EXISTS won't add columns)."""
+    cols = lambda table: {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for stmt in (
+        "ALTER TABLE assets ADD COLUMN qc_status TEXT DEFAULT 'approved'",
+        "ALTER TABLE accounts ADD COLUMN channel_id TEXT DEFAULT ''",
+        "ALTER TABLE accounts ADD COLUMN handle TEXT DEFAULT ''",
+    ):
+        try:
+            conn.execute(stmt)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS generations (
+        id TEXT PRIMARY KEY,
+        style TEXT, topic TEXT, status TEXT DEFAULT 'queued',
+        detail TEXT DEFAULT '', progress INTEGER DEFAULT 0,
+        error TEXT DEFAULT '', asset_id TEXT, project_dir TEXT,
+        mode TEXT DEFAULT 'auto', chunks_done INTEGER DEFAULT 0,
+        chunks_total INTEGER DEFAULT 0, meta_json TEXT DEFAULT '{}',
+        created_at TEXT, updated_at TEXT
+    );""")
+    conn.commit()
 
 
 def insert(table: str, row: dict) -> None:

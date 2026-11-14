@@ -19,7 +19,8 @@ class FakePoster:
         self.profile_key = profile_key
 
     def upload(self, *, asset_path, asset_kind, title, description, tags,
-               schedule_at, visibility, progress_cb):
+               schedule_at, visibility, progress_cb,
+               made_for_kids=False, channel_id=""):
         FakePoster.calls.append((self.profile_key, title))
         progress_cb(50)
         return UploadResult(ok=True, public_url="https://fake.test/x")
