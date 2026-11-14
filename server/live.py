@@ -328,6 +328,23 @@ def _parse_progress(line: str, state: dict) -> None:
         state["last_progress_ts"] = time.time()
 
 
+def _read_encoder_progress(key: str, p: dict) -> None:
+    """R7: bytes/status dibaca dari log ffmpeg (size= kB) — proses hidup
+    saja tidak cukup; size bertambah = data benar-benar mengalir."""
+    try:
+        with open(p["log_path"], "rb") as f:
+            f.seek(max(0, os.path.getsize(p["log_path"]) - 65536))
+            tail = f.read().decode("utf-8", errors="replace")
+        matches = re.findall(r"size=\s*(\d+)kB", tail)
+        if matches:
+            size_kb = int(matches[-1])
+            if size_kb * 1024 > p.get("bytes", 0):
+                p["bytes"] = size_kb * 1024
+                p["last_progress_ts"] = time.time()
+    except Exception:
+        pass
+
+
 def _watch_loop() -> None:
     """Health: proses hidup + data mengalir + desired_on → pulihkan."""
     while True:
@@ -337,11 +354,12 @@ def _watch_loop() -> None:
             if not profile or not profile.get("desired_on"):
                 continue
             alive = p["proc"].poll() is None
+            _read_encoder_progress(key, p)
             flowing = alive and (time.time() - p["last_progress_ts"]) < \
                 STALL_TIMEOUT_S and p["bytes"] > 0
             if alive and not flowing and p["bytes"] == 0 and \
-                    time.time() - p["started_at"] < 30:
-                continue  # baru start, beri waktu
+                    time.time() - p["started_at"] < 120:
+                continue  # baru start, beri waktu naik
             if not alive or not flowing:
                 restarts = p.get("restarts", 0)
                 backoff = RESTART_BACKOFF[min(restarts,
